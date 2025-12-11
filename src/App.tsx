@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
 import { collection, doc, getDocs, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from './firebase';
 
@@ -18,6 +18,7 @@ type Customer = {
   cityId: string;
   name: string;
   phone?: string;
+  startDate?: string;
   subscriptionValue?: number;
   setupFeeTotal?: number;
   setupFeePaid?: number;
@@ -48,6 +49,7 @@ function App() {
   const [password, setPassword] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [startDate, setStartDate] = useState('');
   const [subscriptionValue, setSubscriptionValue] = useState('');
   const [setupFeeTotal, setSetupFeeTotal] = useState('');
   const [setupFeePaid, setSetupFeePaid] = useState('');
@@ -66,6 +68,14 @@ function App() {
   const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid'} | null>(null);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<{type: 'city' | 'customer'; id: string; name: string} | null>(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [showAddCustomerForm, setShowAddCustomerForm] = useState(false);
+  const [editPasswordModal, setEditPasswordModal] = useState(false);
+  const [editPassword, setEditPassword] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
+  const [pendingEditCustomer, setPendingEditCustomer] = useState<Customer | null>(null);
 
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
@@ -164,7 +174,12 @@ function App() {
     }
   };
 
-  const handleDeleteCity = async (cityId: string) => {
+  const handleDeleteCity = (cityId: string) => {
+    const city = cities.find(c => c.id === cityId);
+    setDeleteConfirm({ type: 'city', id: cityId, name: city?.name || '' });
+  };
+
+  const executeDeleteCity = async (cityId: string) => {
     try {
       // Delete city
       await deleteDoc(doc(db, 'cities', cityId));
@@ -208,6 +223,7 @@ function App() {
     };
     
     if (customerPhone) customerData.phone = customerPhone;
+    if (startDate) customerData.startDate = startDate;
     if (subscriptionValue) customerData.subscriptionValue = parseFloat(subscriptionValue);
     if (setupFeeTotal) customerData.setupFeeTotal = parseFloat(setupFeeTotal);
     if (setupFeePaid) customerData.setupFeePaid = parseFloat(setupFeePaid);
@@ -224,6 +240,7 @@ function App() {
       
       setCustomerName('');
       setCustomerPhone('');
+      setStartDate('');
       setSubscriptionValue('');
       setSetupFeeTotal('');
       setSetupFeePaid('');
@@ -240,13 +257,57 @@ function App() {
     }
   };
 
-  const handleDeleteCustomer = async (customerId: string) => {
+  const handleDeleteCustomer = (customerId: string) => {
+    const customer = customers.find(c => c.id === customerId);
+    setDeleteConfirm({ type: 'customer', id: customerId, name: customer?.name || '' });
+  };
+
+  const executeDeleteCustomer = async (customerId: string) => {
     try {
       await deleteDoc(doc(db, 'customers', customerId));
       setToastMessage('تم حذف العميل');
     } catch (error) {
       setToastMessage('خطأ في حذف العميل');
       console.error(error);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirm || !deletePassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+
+    setDeleteLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) {
+        setToastMessage('خطأ في المصادقة');
+        return;
+      }
+
+      // التحقق من كلمة المرور
+      const credential = EmailAuthProvider.credential(user.email, deletePassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // تنفيذ الحذف
+      if (deleteConfirm.type === 'city') {
+        await executeDeleteCity(deleteConfirm.id);
+      } else {
+        await executeDeleteCustomer(deleteConfirm.id);
+      }
+
+      setDeleteConfirm(null);
+      setDeletePassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في التحقق');
+        console.error(error);
+      }
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -278,8 +339,44 @@ function App() {
   };
 
   const openEditCustomer = (customer: Customer) => {
-    setEditingCustomer({ ...customer, additionalRouters: customer.additionalRouters ? [...customer.additionalRouters] : [] });
-    setShowEditModal(true);
+    setPendingEditCustomer(customer);
+    setEditPasswordModal(true);
+    setEditPassword('');
+  };
+
+  const confirmEditPassword = async () => {
+    if (!pendingEditCustomer || !editPassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+
+    setEditLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) {
+        setToastMessage('خطأ في المصادقة');
+        return;
+      }
+
+      const credential = EmailAuthProvider.credential(user.email, editPassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // فتح نافذة التعديل
+      setEditingCustomer({ ...pendingEditCustomer, additionalRouters: pendingEditCustomer.additionalRouters ? [...pendingEditCustomer.additionalRouters] : [] });
+      setShowEditModal(true);
+      setEditPasswordModal(false);
+      setPendingEditCustomer(null);
+      setEditPassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في التحقق');
+        console.error(error);
+      }
+    } finally {
+      setEditLoading(false);
+    }
   };
 
   const handleEditCustomer = (field: keyof Customer, value: string | number) => {
@@ -326,7 +423,8 @@ function App() {
     }
   };
 
-  const generateInvoicePDF = async (customer: Customer) => {
+  // فاتورة التأسيس - تظهر رسوم التأسيس والمدفوع والمتبقي
+  const generateSetupInvoicePDF = async (customer: Customer) => {
     const html2pdf = (await import('html2pdf.js')).default;
     const city = cities.find((c) => c.id === customer.cityId);
     const setupRemaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
@@ -336,115 +434,192 @@ function App() {
       <html dir="rtl" lang="ar">
       <head>
         <meta charset="UTF-8">
-        <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
         <style>
-          @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body { font-family: 'Cairo', sans-serif; color: #1a1a1a; line-height: 1.4; direction: rtl; }
-          .container { width: 210mm; height: 297mm; padding: 20px; display: flex; flex-direction: column; }
-          .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #1e40af; }
+          * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Cairo', Arial, sans-serif; }
+          body { color: #1a1a1a; line-height: 1.6; direction: rtl; font-size: 14px; padding: 20px; }
+          .header { border-bottom: 3px solid #1e40af; padding-bottom: 15px; margin-bottom: 20px; }
+          .header table { width: 100%; }
           .company { font-size: 28px; font-weight: 700; color: #1e40af; }
-          .invoice-info { text-align: right; font-size: 10px; }
-          .invoice-info-row { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 5px; }
-          .label { font-weight: 600; color: #6b7280; }
-          .value { font-weight: 700; }
-          .content { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; font-size: 10px; }
-          .section { background: #f9fafb; padding: 12px; border: 1px solid #e5e7eb; }
-          .section-title { font-size: 11px; font-weight: 700; color: white; background: #1e40af; padding: 6px 10px; margin-bottom: 10px; }
-          .item { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; }
-          .item-label { color: #6b7280; font-size: 9px; }
-          .item-value { font-weight: 700; }
-          table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 10px; }
-          thead { background: #1e40af; color: white; }
-          th, td { padding: 6px; text-align: right; border: 1px solid #e5e7eb; }
-          .highlight { background: #fef3c7; font-weight: 700; }
-          .footer { text-align: center; padding-top: 15px; border-top: 1px solid #e5e7eb; font-size: 9px; }
+          .invoice-type { font-size: 16px; color: #f59e0b; font-weight: 600; }
+          .invoice-info { font-size: 12px; text-align: left; }
+          .section { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
+          .section-title { font-size: 14px; font-weight: 700; color: white; background: #1e40af; padding: 10px 15px; }
+          .data-table { width: 100%; border-collapse: collapse; }
+          .data-table td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+          .data-table tr:last-child td { border-bottom: none; }
+          .data-table .label { color: #64748b; width: 40%; }
+          .data-table .value { font-weight: 600; color: #1e293b; }
+          .financial-table { width: 100%; border-collapse: collapse; }
+          .financial-table th { background: #1e40af; color: white; padding: 12px 15px; text-align: right; font-size: 13px; }
+          .financial-table td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+          .financial-table .highlight { background: #fef3c7; font-weight: 700; }
+          .footer { text-align: center; padding-top: 20px; margin-top: 30px; border-top: 2px solid #e2e8f0; font-size: 11px; color: #64748b; }
         </style>
       </head>
       <body>
-        <div class="container">
-          <div class="header">
-            <div class="company">DATA HUB</div>
-            <div class="invoice-info">
-              <div class="invoice-info-row"><span class="label">الفاتورة:</span><span class="value">${customer.id.slice(0, 8).toUpperCase()}</span></div>
-              <div class="invoice-info-row"><span class="label">التاريخ:</span><span class="value">${formatDate(todayISO())}</span></div>
-            </div>
-          </div>
-          <div class="content">
-            <div>
-              <div class="section">
-                <div class="section-title">بيانات العميل</div>
-                <div class="item"><span class="item-label">الاسم</span><span class="item-value">${customer.name}</span></div>
-                <div class="item"><span class="item-label">الجوال</span><span class="item-value">${customer.phone || '-'}</span></div>
-                <div class="item"><span class="item-label">المدينة</span><span class="item-value">${city?.name || '-'}</span></div>
-                <div class="item"><span class="item-label">الموقع</span><span class="item-value">${customer.site || '-'}</span></div>
-              </div>
-              <div class="section">
-                <div class="section-title">بيانات الاتصال</div>
-                <div class="item"><span class="item-label">IP Number</span><span class="item-value">${customer.ipNumber || '-'}</span></div>
-                <div class="item"><span class="item-label">User Name</span><span class="item-value">${customer.userName || '-'}</span></div>
-                ${customer.additionalRouters && customer.additionalRouters.length > 0 ? customer.additionalRouters.map((r, i) => `
-                  <div class="item"><span class="item-label">راوتر إضافي ${i + 1} - User</span><span class="item-value">${r.userName || '-'}</span></div>
-                  <div class="item"><span class="item-label">راوتر إضافي ${i + 1} - IP</span><span class="item-value">${r.ipNumber || '-'}</span></div>
-                `).join('') : ''}
-                <div class="item"><span class="item-label">LAP</span><span class="item-value">${customer.lap || '-'}</span></div>
-              </div>
-            </div>
-            <div>
-              <div class="section">
-                <div class="section-title">الحساب المالي</div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>البيان</th>
-                      <th>المبلغ</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>قيمة الاشتراك</td>
-                      <td>${customer.subscriptionValue ?? 0}</td>
-                    </tr>
-                    <tr>
-                      <td>رسوم التأسيس</td>
-                      <td>${customer.setupFeeTotal ?? 0}</td>
-                    </tr>
-                    <tr>
-                      <td>المدفوع</td>
-                      <td>${customer.setupFeePaid ?? 0}</td>
-                    </tr>
-                    <tr class="highlight">
-                      <td>المتبقي</td>
-                      <td>${setupRemaining}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              ${customer.notes ? `
-              <div class="section">
-                <div class="section-title">ملاحظات</div>
-                <div class="item"><span class="item-value">${customer.notes}</span></div>
-              </div>
-              ` : ''}
-            </div>
-          </div>
-          <div class="footer">
-            <p>شكراً لتعاملكم معنا | © 2025 DATA HUB</p>
-          </div>
+        <div class="header">
+          <table>
+            <tr>
+              <td style="vertical-align: middle;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <svg width="40" height="28" viewBox="0 0 56 28" fill="none">
+                    <polygon points="4,4 4,24 18,14" fill="#1e40af" />
+                    <polygon points="20,4 20,24 34,14" fill="#60a5fa" />
+                  </svg>
+                  <div>
+                    <div class="company">DATA HUB</div>
+                    <div class="invoice-type">فاتورة تأسيس</div>
+                  </div>
+                </div>
+              </td>
+              <td class="invoice-info" style="vertical-align: top;">
+                <div><strong>رقم الفاتورة:</strong> SET-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}</div>
+                <div><strong>التاريخ:</strong> ${formatDate(todayISO())}</div>
+              </td>
+          <table class="financial-table">
+            <thead>
+              <tr><th>البيان</th><th>المبلغ (ريال)</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>إجمالي رسوم التأسيس</td><td>${customer.setupFeeTotal ?? 0}</td></tr>
+              <tr><td>المبلغ المدفوع</td><td>${customer.setupFeePaid ?? 0}</td></tr>
+              <tr class="highlight"><td><strong>المتبقي</strong></td><td><strong>${setupRemaining}</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        
+        ${customer.notes ? `
+        <div class="section">
+          <div class="section-title">ملاحظات</div>
+          <div style="padding: 15px; font-size: 13px; color: #374151;">${customer.notes}</div>
+        </div>
+        ` : ''}
+        
+        <div class="footer">
+          <p>شكراً لتعاملكم معنا | © 2025 DATA HUB</p>
         </div>
       </body>
       </html>
     `;
 
     const options = {
-      margin: [10, 10, 10, 10] as [number, number, number, number],
-      filename: `فاتورة_${customer.name}.pdf`,
+      margin: 10,
+      filename: `فاتورة_تأسيس_${customer.name}.pdf`,
       image: { type: 'jpeg' as const, quality: 0.98 },
       html2canvas: { scale: 2 },
       jsPDF: { orientation: 'portrait' as const, unit: 'mm' as const, format: 'a4' as const }
     };
     html2pdf().set(options).from(invoiceHTML).save();
-    setToastMessage(`تم إصدار الفاتورة لـ ${customer.name}`);
+    setToastMessage(`تم إصدار فاتورة التأسيس لـ ${customer.name}`);
+  };
+
+  // فاتورة الاشتراك - تظهر قيمة الاشتراك وحالة الدفع
+  const generateSubscriptionInvoicePDF = async (customer: Customer) => {
+    const html2pdf = (await import('html2pdf.js')).default;
+    const city = cities.find((c) => c.id === customer.cityId);
+    const isPaid = customer.paymentStatus === 'paid';
+
+    const invoiceHTML = `
+      <!DOCTYPE html>
+      <html dir="rtl" lang="ar">
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Cairo', Arial, sans-serif; }
+          body { color: #1a1a1a; line-height: 1.6; direction: rtl; font-size: 14px; padding: 20px; }
+          .header { border-bottom: 3px solid #1e40af; padding-bottom: 15px; margin-bottom: 20px; }
+          .header table { width: 100%; }
+          .company { font-size: 28px; font-weight: 700; color: #1e40af; }
+          .invoice-type { font-size: 16px; color: #06b6d4; font-weight: 600; }
+          .invoice-info { font-size: 12px; text-align: left; }
+          .section { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
+          .section-title { font-size: 14px; font-weight: 700; color: white; background: #1e40af; padding: 10px 15px; }
+          .data-table { width: 100%; border-collapse: collapse; }
+          .data-table td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+          .data-table tr:last-child td { border-bottom: none; }
+          .data-table .label { color: #64748b; width: 40%; }
+          .data-table .value { font-weight: 600; color: #1e293b; }
+          .subscription-box { background: #e0f2fe; border: 2px solid #0ea5e9; border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0; }
+          .subscription-label { font-size: 14px; color: #64748b; margin-bottom: 10px; }
+          .subscription-value { font-size: 32px; font-weight: 700; color: #1e40af; }
+          .status-box { border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0; }
+          .status-paid { background: #dcfce7; border: 2px solid #22c55e; }
+          .status-unpaid { background: #fee2e2; border: 2px solid #ef4444; }
+          .status-label { font-size: 14px; color: #64748b; margin-bottom: 10px; }
+          .status-value { font-size: 24px; font-weight: 700; }
+          .status-paid .status-value { color: #16a34a; }
+          .status-unpaid .status-value { color: #dc2626; }
+          .footer { text-align: center; padding-top: 20px; margin-top: 30px; border-top: 2px solid #e2e8f0; font-size: 11px; color: #64748b; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <table>
+            <tr>
+              <td style="vertical-align: middle;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <svg width="40" height="28" viewBox="0 0 56 28" fill="none">
+                    <polygon points="4,4 4,24 18,14" fill="#1e40af" />
+                    <polygon points="20,4 20,24 34,14" fill="#60a5fa" />
+                  </svg>
+                  <div>
+                    <div class="company">DATA HUB</div>
+                    <div class="invoice-type">فاتورة اشتراك شهري</div>
+                  </div>
+                </div>
+              </td>
+              <td class="invoice-info" style="vertical-align: top;">
+                <div><strong>رقم الفاتورة:</strong> SUB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}</div>
+                <div><strong>التاريخ:</strong> ${formatDate(todayISO())}</div>
+              </td>
+            </tr>
+          </table>
+        </div>
+        
+        <div class="section">
+          <div class="section-title">بيانات العميل</div>
+          <table class="data-table">
+            <tr><td class="label">اسم العميل</td><td class="value">${customer.name}</td></tr>
+            <tr><td class="label">رقم الجوال</td><td class="value">${customer.phone || '-'}</td></tr>
+            <tr><td class="label">المدينة</td><td class="value">${city?.name || '-'}</td></tr>
+            <tr><td class="label">الموقع</td><td class="value">${customer.site || '-'}</td></tr>
+            <tr><td class="label">تاريخ بدء الاشتراك</td><td class="value">${customer.startDate ? formatDate(customer.startDate) : '-'}</td></tr>
+          </table>
+        </div>
+        
+        <div class="subscription-box">
+          <div class="subscription-label">قيمة الاشتراك الشهري</div>
+          <div class="subscription-value">${customer.subscriptionValue ?? 0} ريال</div>
+        </div>
+        
+        <div class="status-box ${isPaid ? 'status-paid' : 'status-unpaid'}">
+          <div class="status-label">حالة السداد</div>
+          <div class="status-value">${isPaid ? '✓ مدفوع' : '✗ غير مسدد'}</div>
+        </div>
+        
+        ${customer.notes ? `
+        <div class="section">
+          <div class="section-title">ملاحظات</div>
+          <div style="padding: 15px; font-size: 13px; color: #374151;">${customer.notes}</div>
+        </div>
+        ` : ''}
+        
+        <div class="footer">
+          <p>شكراً لتعاملكم معنا | © 2025 DATA HUB</p>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const options = {
+      margin: 10,
+      filename: `فاتورة_اشتراك_${customer.name}.pdf`,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2 },
+      jsPDF: { orientation: 'portrait' as const, unit: 'mm' as const, format: 'a4' as const }
+    };
+    html2pdf().set(options).from(invoiceHTML).save();
+    setToastMessage(`تم إصدار فاتورة الاشتراك لـ ${customer.name}`);
   };
 
   const handleLogin = async (e: FormEvent) => {
@@ -484,7 +659,13 @@ function App() {
     return (
       <div className="login-page">
         <div className="login-card">
-          <h1>DATA HUB</h1>
+          <div className="login-brand">
+            <svg width="50" height="35" viewBox="0 0 56 28" fill="none">
+              <polygon points="4,4 4,24 18,14" fill="#1e40af" />
+              <polygon points="20,4 20,24 34,14" fill="#60a5fa" />
+            </svg>
+            <h1>DATA HUB</h1>
+          </div>
           <p style={{ textAlign: 'center', color: '#6b7280' }}>جاري التحميل...</p>
         </div>
       </div>
@@ -495,7 +676,13 @@ function App() {
     return (
       <div className="login-page">
         <div className="login-card">
-          <h1>DATA HUB</h1>
+          <div className="login-brand">
+            <svg width="50" height="35" viewBox="0 0 56 28" fill="none">
+              <polygon points="4,4 4,24 18,14" fill="#1e40af" />
+              <polygon points="20,4 20,24 34,14" fill="#60a5fa" />
+            </svg>
+            <h1>DATA HUB</h1>
+          </div>
           <form onSubmit={handleLogin}>
             <input type="email" placeholder="البريد الإلكتروني" value={username} onChange={(e) => setUsername(e.target.value)} required />
             <input type="password" placeholder="كلمة المرور" value={password} onChange={(e) => setPassword(e.target.value)} required />
@@ -532,11 +719,17 @@ function App() {
         {activeTab === 'dashboard' && (
           <>
             <div className="section">
-              <h2>المدن</h2>
-              <form onSubmit={handleAddCity} className="form-group">
-                <input type="text" name="cityName" placeholder="اسم المدينة" required />
-                <button type="submit" className="btn primary">إضافة مدينة</button>
-              </form>
+              <div className="section-header">
+                <h2>المدن</h2>
+                <button type="button" className="btn-add" onClick={() => {
+                  const name = prompt('أدخل اسم المدينة:');
+                  if (name && name.trim()) {
+                    const id = crypto.randomUUID();
+                    setDoc(doc(db, 'cities', id), { id, name: name.trim() });
+                    setToastMessage('تمت إضافة المدينة');
+                  }
+                }}>+</button>
+              </div>
               <div className="city-list">
                 {cities.map((city) => (
                   <div key={city.id} className={`city-card ${selectedCityId === city.id ? 'active' : ''}`} onClick={() => setSelectedCityId(city.id)}>
@@ -549,10 +742,20 @@ function App() {
 
             {selectedCity && (
               <div className="section">
-                <h2>عملاء {selectedCity.name}</h2>
-                <form onSubmit={handleAddCustomer} className="form-group">
+                <div className="section-header">
+                  <h2>عملاء {selectedCity.name}</h2>
+                  <button type="button" className="btn-add" onClick={() => setShowAddCustomerForm(!showAddCustomerForm)}>
+                    {showAddCustomerForm ? '×' : '+'}
+                  </button>
+                </div>
+                {showAddCustomerForm && (
+                <form onSubmit={handleAddCustomer} className="form-group customer-form-collapsible">
                   <input type="text" placeholder="اسم العميل" value={customerName} onChange={(e) => setCustomerName(e.target.value)} required />
                   <input type="text" placeholder="رقم العميل (الجوال)" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
+                  <div className="date-field">
+                    <label>تاريخ بدء الاشتراك</label>
+                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                  </div>
                   <input type="number" placeholder="قيمة الاشتراك" value={subscriptionValue} onChange={(e) => setSubscriptionValue(e.target.value)} />
                   <input type="number" placeholder="رسوم التأسيس" value={setupFeeTotal} onChange={(e) => setSetupFeeTotal(e.target.value)} />
                   <input type="number" placeholder="المدفوع" value={setupFeePaid} onChange={(e) => setSetupFeePaid(e.target.value)} />
@@ -597,6 +800,7 @@ function App() {
                   <textarea placeholder="ملاحظات إضافية" value={notes} onChange={(e) => setNotes(e.target.value)} />
                   <button type="submit" className="btn primary">إضافة عميل</button>
                 </form>
+                )}
 
                 <div className="customer-list">
                   {filteredCustomers.map((customer) => {
@@ -620,7 +824,8 @@ function App() {
                       <div className="small">{customer.phone || '-'} • {customer.ipNumber || '-'}</div>
                       <div className="small">المتبقي: {remaining} ريال</div>
                       <div className="actions">
-                        <button onClick={() => generateInvoicePDF(customer)} className="btn secondary">PDF</button>
+                        <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">تأسيس</button>
+                        <button onClick={() => generateSubscriptionInvoicePDF(customer)} className="btn secondary">اشتراك</button>
                         <button onClick={() => handleDeleteCustomer(customer.id)} className="btn danger">حذف</button>
                       </div>
                     </div>
@@ -648,7 +853,8 @@ function App() {
                   <div><strong>{customer.name}</strong></div>
                   <div className="small">المتبقي: {remaining} ريال</div>
                   <div className="actions">
-                    <button onClick={() => generateInvoicePDF(customer)} className="btn primary">إصدار PDF</button>
+                    <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">فاتورة التأسيس</button>
+                    <button onClick={() => generateSubscriptionInvoicePDF(customer)} className="btn primary">فاتورة الاشتراك</button>
                   </div>
                 </div>
                 );
@@ -675,6 +881,10 @@ function App() {
               <div className="detail-row">
                 <span className="detail-label">رقم العميل:</span>
                 <span className="detail-value">{selectedCustomer.phone || '-'}</span>
+              </div>
+              <div className="detail-row">
+                <span className="detail-label">تاريخ بدء الاشتراك:</span>
+                <span className="detail-value">{selectedCustomer.startDate ? formatDate(selectedCustomer.startDate) : '-'}</span>
               </div>
               <div className="detail-row">
                 <span className="detail-label">قيمة الاشتراك:</span>
@@ -741,7 +951,79 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => setShowCustomerModal(false)} className="btn secondary">إغلاق</button>
-              <button onClick={() => { generateInvoicePDF(selectedCustomer); setShowCustomerModal(false); }} className="btn primary">طباعة PDF</button>
+              <button onClick={() => { generateSetupInvoicePDF(selectedCustomer); }} className="btn warning">فاتورة التأسيس</button>
+              <button onClick={() => { generateSubscriptionInvoicePDF(selectedCustomer); }} className="btn primary">فاتورة الاشتراك</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="modal-overlay" onClick={() => { setDeleteConfirm(null); setDeletePassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد الحذف</h3>
+              <button onClick={() => { setDeleteConfirm(null); setDeletePassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                هل أنت متأكد من حذف {deleteConfirm.type === 'city' ? 'المدينة' : 'العميل'}{' '}
+                <strong className="text-danger">{deleteConfirm.name}</strong>؟
+                {deleteConfirm.type === 'city' && (
+                  <><br /><small style={{ color: '#ef4444' }}>سيتم حذف جميع العملاء في هذه المدينة</small></>
+                )}
+              </p>
+              <div className="edit-field">
+                <label>أدخل كلمة المرور للتأكيد</label>
+                <input 
+                  type="password" 
+                  placeholder="كلمة المرور" 
+                  value={deletePassword} 
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmDelete()}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setDeleteConfirm(null); setDeletePassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmDelete} className="btn danger" disabled={deleteLoading}>
+                {deleteLoading ? 'جاري التحقق...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Password Confirmation Modal */}
+      {editPasswordModal && pendingEditCustomer && (
+        <div className="modal-overlay" onClick={() => { setEditPasswordModal(false); setPendingEditCustomer(null); setEditPassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد التعديل</h3>
+              <button onClick={() => { setEditPasswordModal(false); setPendingEditCustomer(null); setEditPassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                لتعديل بيانات العميل <strong>{pendingEditCustomer.name}</strong>، أدخل كلمة المرور
+              </p>
+              <div className="edit-field">
+                <label>كلمة المرور</label>
+                <input 
+                  type="password" 
+                  placeholder="كلمة المرور" 
+                  value={editPassword} 
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmEditPassword()}
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setEditPasswordModal(false); setPendingEditCustomer(null); setEditPassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmEditPassword} className="btn primary" disabled={editLoading}>
+                {editLoading ? 'جاري التحقق...' : 'متابعة'}
+              </button>
             </div>
           </div>
         </div>
@@ -788,6 +1070,10 @@ function App() {
                 <div className="edit-field">
                   <label>رقم العميل (الجوال)</label>
                   <input type="text" value={editingCustomer.phone || ''} onChange={(e) => handleEditCustomer('phone', e.target.value)} />
+                </div>
+                <div className="edit-field">
+                  <label>تاريخ بدء الاشتراك</label>
+                  <input type="date" value={editingCustomer.startDate || ''} onChange={(e) => handleEditCustomer('startDate', e.target.value)} />
                 </div>
                 <div className="edit-field">
                   <label>قيمة الاشتراك</label>

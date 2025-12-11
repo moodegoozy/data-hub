@@ -2,22 +2,33 @@
 
 ## Architecture Overview
 
-This is a **React/TypeScript web application** for managing internet service subscriptions across multiple cities. The app is built with Vite and uses Firebase for potential backend integration, with localStorage as the current primary data persistence layer.
+This is a **React/TypeScript web application** for managing internet service provider (ISP) customer subscriptions across multiple cities. The app is built with Vite and uses **Firebase Authentication + Firestore** for data persistence and multi-user access control.
 
 ### Core Architecture
-- **Single-page app** (`src/App.tsx`): Monolithic component handling authentication, city management, and customer subscription tracking
-- **Client-side state**: All data persists to `localStorage` under the key `STORAGE_KEY = 'internet-admin-data-v1'`
-- **Firebase integration** (`src/firebase.ts`): Currently initialized but not actively used in the app; available for future Realtime Database or Firestore integration
+- **Single-page app** (`src/App.tsx`): Monolithic component (~880 lines) handling authentication, city management, customer CRUD, invoice generation, and payment tracking
+- **Firebase backend** (`src/firebase.ts`): 
+  - Authentication: Email/password login with session persistence via `onAuthStateChanged`
+  - Firestore: Two collections (`cities`, `customers`) with real-time listeners (`onSnapshot`)
+  - Security: Read/write access restricted to authenticated users only (see `firestore.rules`)
 - **Build chain**: Vite (dev server) → React Fast Refresh → static dist/ for Firebase Hosting
+- **UI language**: Fully Arabic with `dir="rtl"` and Cairo font; dates formatted with `'ar-EG'` locale
 
 ### Data Model
-Three core types persist together in localStorage:
+Two Firestore collections with real-time sync:
 ```typescript
 type City { id, name }
-type Customer { id, cityId, name, startDate, lastPayment }
-type StoredData { cities, customers, selectedCityId }
+type Customer {
+  id, cityId, name, phone?, subscriptionValue?, 
+  setupFeeTotal?, setupFeePaid?, ipNumber?, userName?,
+  additionalRouters?: { userName, ipNumber }[],
+  lap?, site?, notes?, paymentStatus?: 'paid' | 'unpaid'
+}
 ```
-**Key pattern**: Customers are always associated with a city. Deleting a city soft-deletes customers (filters them out).
+**Key patterns**: 
+- Customers belong to a city (foreign key: `cityId`)
+- Deleting a city cascades to all its customers
+- Payment status tracks monthly subscription state (paid/unpaid)
+- Additional routers array supports multiple network devices per customer
 
 ## Developer Workflows
 
@@ -26,37 +37,47 @@ type StoredData { cities, customers, selectedCityId }
 npm run dev          # Start Vite dev server (hot reload enabled)
 npm run build        # Production build → dist/
 npm run preview      # Preview production build locally
-npm run lint         # Type-check only (tsc --noEmit)
+npm run lint         # Type-check only (tsc --noEmit, no eslint)
 ```
+**Note**: Firebase packages are NOT in package.json but imported in code - they're CDN-loaded or externally managed. Check imports if build fails.
 
 ### Deployment
 - **Firebase Hosting**: `firebase.json` configured for SPA routing (all paths → /index.html)
-- **Pre-deployment**: Run `npm run build` to generate `dist/` directory
-- **Deployment command**: `firebase deploy` (requires Firebase CLI)
+- **Pre-deployment steps**:
+  1. `npm run build` to generate `dist/` directory
+  2. Verify Firebase config in `src/firebase.ts` matches production project
+  3. `firebase deploy` (requires Firebase CLI and authenticated session)
+- **Firestore rules**: Deployed separately via `firestore.rules` - all authenticated users have full read/write access
 
 ## Key Conventions & Patterns
 
-### localStorage Strategy
-- **Single serialization point**: `useEffect` in App.tsx saves entire data object whenever `data` state changes
-- **Load on mount**: `loadStoredData()` called in `useState` initializer to hydrate from localStorage
-- **Error handling**: Catches JSON parse errors, falls back to empty state
-- When modifying stored data, always update the `data` state object (let useEffect handle persistence)
+### Firestore Real-time Sync Strategy
+- **onSnapshot listeners**: Two active listeners (cities, customers) established in `useEffect` when `isAuthenticated` becomes true
+- **Automatic UI updates**: State updates (`setCities`, `setCustomers`) trigger re-renders; no manual polling needed
+- **Cleanup pattern**: Return unsubscribe functions in useEffect to prevent memory leaks on unmount
+- **Write operations**: All use `setDoc(doc(db, collection, id), data)` for creates/updates, `deleteDoc` for deletes
+- **Undefined handling**: Firestore rejects `undefined` values - all writes build clean objects excluding undefined/null/empty strings
 
-### Subscription Status Computation
-The `computeStatus()` function is **business logic critical**: 
-- Calculates days remaining from `lastPayment` date (1 month = expiration window)
-- Returns status enum: `'active'` | `'warning'` (≤5 days left) | `'expired'`
-- Used to render UI indicators and determine user visibility; changes here impact user experience significantly
+### Payment Status Tracking
+- **paymentStatus field**: Enum `'paid' | 'unpaid'` stored per customer
+- **Confirmation pattern**: Status changes trigger a confirmation modal (`confirmStatusChange` state) before updating Firestore
+- **Default state**: New customers default to `'unpaid'` status
 
 ### Form Patterns
 - All form submissions use `preventDefault()` on FormEvent
-- Input values stored in individual `useState` hooks, then batch-written to `data` state on submit
+- Input values stored in individual `useState` hooks, then batch-written to Firestore on submit
 - Toast notifications (`toastMessage` state) auto-dismiss after 2.2s
+- **Additional routers**: Dynamic form inputs managed via `additionalRouterCount` state with array of router objects
 
 ### Localization
-- **Arabic-first UI**: Date formatting uses `'ar-EG'` locale exclusively
-- All user-facing strings are in Arabic (console errors bilingual)
-- Date strings in localStorage are ISO format (YYYY-MM-DD) for consistency
+- **Arabic-first UI**: Date formatting uses `'ar-EG'` locale exclusively (`formatDate()` function)
+- All user-facing strings are in Arabic; error handling includes localized Firebase auth error codes
+- ISO date format (YYYY-MM-DD) used for internal date operations via `todayISO()` helper
+
+### Invoice Generation
+- **Dynamic import**: `html2pdf.js` loaded on-demand in `generateInvoicePDF()`
+- **Template**: Inline HTML string with embedded CSS (Cairo font, RTL layout, A4 dimensions)
+- **Customer data**: Includes all fields, additional routers, and calculated setup fee balance
 
 ## TypeScript Setup
 
@@ -67,21 +88,24 @@ The `computeStatus()` function is **business logic critical**:
 
 ## Critical Integration Points
 
-### Firebase (Initialized but Unused)
-- `src/firebase.ts` exports `firebaseApp` singleton
-- Currently no authentication, database reads, or sync implemented
-- Future: Can extend with Realtime Database or Firestore for multi-device sync
-- App currently offline-first by design
+### Firebase Authentication Flow
+- `onAuthStateChanged` listener establishes session on app load (persists across refreshes)
+- Login errors mapped to Arabic messages (see `handleLogin` error codes)
+- All UI content gated behind `isAuthenticated` state - unauthenticated users see login screen only
+- `authLoading` state prevents flash of wrong UI during initial auth check
 
-### State Mutation Pattern
-- Use functional setState: `setData(prev => ({ ...prev, ...changes }))`
-- Never mutate nested objects directly before setState
-- `useMemo` filters selectedCity to avoid re-renders
+### State Management Pattern
+- **No state management library**: All state in App.tsx via `useState` hooks
+- **Derived state**: Use `useMemo` for filtered lists (`filteredCustomers`, `invoiceFilteredCustomers`)
+- **Modal state**: Separate boolean flags (`showCustomerModal`, `showEditModal`, `confirmStatusChange`)
+- **Form state**: Each input field has its own state hook (not using form libraries)
 
 ## When Extending This Codebase
 
-1. **Adding features**: Keep them in App.tsx unless file exceeds 500 LOC
-2. **New data types**: Always add to `StoredData` type and extend the localStorage save effect
-3. **Date handling**: Use ISO format in storage, format with ar-EG locale for display
-4. **Forms**: Follow existing pattern (state per input → batch setState on submit → auto-toast feedback)
-5. **Testing**: Manual (no test framework installed); verify localStorage persistence and status computation
+1. **Adding features**: Keep them in App.tsx unless file exceeds ~1000 LOC (currently at 880)
+2. **New Firestore fields**: Update TypeScript types first, then ensure write operations exclude undefined values
+3. **Date handling**: Use ISO format internally via `todayISO()`, format with `'ar-EG'` locale for display via `formatDate()`
+4. **Forms**: Follow existing pattern (state per input → build clean object → Firestore write → toast feedback)
+5. **Real-time updates**: Don't call `getDocs` manually - rely on `onSnapshot` listeners for automatic UI sync
+6. **Testing**: Manual (no test framework installed); verify Firebase writes and auth flow in browser
+7. **Security**: Modify `firestore.rules` when adding new collections or changing access patterns

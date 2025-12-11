@@ -102,6 +102,18 @@ body {
   }
 }
 
+.login-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.login-brand svg {
+  flex-shrink: 0;
+}
+
 .login-card h1 {
   font-size: 32px;
   font-weight: 800;
@@ -109,8 +121,7 @@ body {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  margin-bottom: 8px;
-  text-align: center;
+  margin: 0;
 }
 
 .login-card form {
@@ -258,11 +269,65 @@ body {
   color: var(--text);
 }
 
+/* ===== SECTION HEADER WITH ADD BUTTON ===== */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.section-header h2 {
+  margin-bottom: 0;
+}
+
+.btn-add {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  color: white;
+  font-size: 24px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-add:hover {
+  transform: scale(1.1);
+  box-shadow: var(--shadow-md);
+}
+
 /* ===== FORMS ===== */
 .form-group {
   display: grid;
   gap: 14px;
   margin-bottom: 24px;
+}
+
+.customer-form-collapsible {
+  background: #f8fafc;
+  padding: 20px;
+  border-radius: 12px;
+  border: 2px solid var(--border);
+  margin-bottom: 20px;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .form-group input,
@@ -305,6 +370,35 @@ body {
 .calculated-field strong {
   color: var(--primary);
   font-size: 16px;
+}
+
+.date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.date-field label {
+  font-size: 13px;
+  color: var(--text-light);
+  font-weight: 500;
+}
+
+.date-field input[type="date"] {
+  padding: 12px 14px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+  font-family: 'Cairo', system-ui, sans-serif;
+  background: #f9fafb;
+  transition: all 0.3s ease;
+}
+
+.date-field input[type="date"]:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.1);
 }
 
 /* ===== BUTTONS ===== */
@@ -375,6 +469,17 @@ body {
 .btn.danger:hover {
   background: #fecaca;
   color: #991b1b;
+}
+
+.btn.warning {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #92400e;
+  border: 2px solid #f59e0b;
+}
+
+.btn.warning:hover {
+  background: linear-gradient(135deg, #fde68a 0%, #fcd34d 100%);
+  color: #78350f;
 }
 
 /* ===== LISTS ===== */
