@@ -29,7 +29,10 @@ type Customer = {
   site?: string;
   notes?: string;
   paymentStatus?: 'paid' | 'unpaid';
+  monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
 };
+
+const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -61,7 +64,9 @@ function App() {
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly'>('dashboard');
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
@@ -478,7 +483,7 @@ function App() {
               </td>
           <table class="financial-table">
             <thead>
-              <tr><th>البيان</th><th>المبلغ (ريال)</th></tr>
+              <tr><th>البيان</th><th>المبلغ (﷼)</th></tr>
             </thead>
             <tbody>
               <tr><td>إجمالي رسوم التأسيس</td><td>${customer.setupFeeTotal ?? 0}</td></tr>
@@ -589,7 +594,7 @@ function App() {
         
         <div class="subscription-box">
           <div class="subscription-label">قيمة الاشتراك الشهري</div>
-          <div class="subscription-value">${customer.subscriptionValue ?? 0} ريال</div>
+          <div class="subscription-value">${customer.subscriptionValue ?? 0} ﷼</div>
         </div>
         
         <div class="status-box ${isPaid ? 'status-paid' : 'status-unpaid'}">
@@ -710,6 +715,7 @@ function App() {
       <div className="tabs">
         <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>لوحة التحكم</button>
         <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>الفواتير</button>
+        <button className={`tab-btn ${activeTab === 'yearly' ? 'active' : ''}`} onClick={() => setActiveTab('yearly')}>متابعة الاشتراكات</button>
       </div>
 
       {loading ? (
@@ -761,7 +767,7 @@ function App() {
                   <input type="number" placeholder="المدفوع" value={setupFeePaid} onChange={(e) => setSetupFeePaid(e.target.value)} />
                   <div className="calculated-field">
                     <span>المتبقي: </span>
-                    <strong>{(parseFloat(setupFeeTotal) || 0) - (parseFloat(setupFeePaid) || 0)} ريال</strong>
+                    <strong>{(parseFloat(setupFeeTotal) || 0) - (parseFloat(setupFeePaid) || 0)} ﷼</strong>
                   </div>
                   <input type="text" placeholder="IP Number (الراوتر الأساسي)" value={ipNumber} onChange={(e) => setIpNumber(e.target.value)} />
                   <input type="text" placeholder="User Name (الراوتر الأساسي)" value={userName} onChange={(e) => setUserName(e.target.value)} />
@@ -822,7 +828,7 @@ function App() {
                         </div>
                       </div>
                       <div className="small">{customer.phone || '-'} • {customer.ipNumber || '-'}</div>
-                      <div className="small">المتبقي: {remaining} ريال</div>
+                      <div className="small">المتبقي: {remaining} ﷼</div>
                       <div className="actions">
                         <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">تأسيس</button>
                         <button onClick={() => generateSubscriptionInvoicePDF(customer)} className="btn secondary">اشتراك</button>
@@ -851,7 +857,7 @@ function App() {
                 return (
                 <div key={customer.id} className="invoice-card">
                   <div><strong>{customer.name}</strong></div>
-                  <div className="small">المتبقي: {remaining} ريال</div>
+                  <div className="small">المتبقي: {remaining} ﷼</div>
                   <div className="actions">
                     <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">فاتورة التأسيس</button>
                     <button onClick={() => generateSubscriptionInvoicePDF(customer)} className="btn primary">فاتورة الاشتراك</button>
@@ -859,6 +865,114 @@ function App() {
                 </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'yearly' && (
+          <div className="section yearly-section">
+            <div className="yearly-header">
+              <h2>متابعة الاشتراكات السنوية</h2>
+              <div className="yearly-controls">
+                <select 
+                  value={yearlyCityId || ''} 
+                  onChange={(e) => setYearlyCityId(e.target.value || null)} 
+                  className="input"
+                >
+                  <option value="">جميع المدن</option>
+                  {cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}
+                </select>
+                <div className="year-selector">
+                  <button className="btn-year" onClick={() => setSelectedYear(y => y - 1)}>◀</button>
+                  <span className="year-display">{selectedYear}</span>
+                  <button className="btn-year" onClick={() => setSelectedYear(y => y + 1)}>▶</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="yearly-table-container">
+              <table className="yearly-table">
+                <thead>
+                  <tr>
+                    <th className="sticky-col customer-col">العميل</th>
+                    <th className="sticky-col city-col">المدينة</th>
+                    <th className="sticky-col subscription-col">الاشتراك</th>
+                    {MONTHS_AR.map((month, idx) => (
+                      <th key={idx} className="month-col">{month}</th>
+                    ))}
+                    <th className="total-col">المجموع</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {customers
+                    .filter(c => !yearlyCityId || c.cityId === yearlyCityId)
+                    .map((customer) => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      let paidCount = 0;
+                      
+                      return (
+                        <tr key={customer.id}>
+                          <td className="sticky-col customer-col">{customer.name}</td>
+                          <td className="sticky-col city-col">{city?.name || '-'}</td>
+                          <td className="sticky-col subscription-col">{customer.subscriptionValue ?? 0} ﷼</td>
+                          {MONTHS_AR.map((_, monthIdx) => {
+                            const yearMonth = `${selectedYear}-${String(monthIdx + 1).padStart(2, '0')}`;
+                            const status = customer.monthlyPayments?.[yearMonth] || 'pending';
+                            if (status === 'paid') paidCount++;
+                            if (status === 'partial') paidCount += 0.5;
+                            
+                            const statusLabels = {
+                              paid: 'مدفوع',
+                              partial: 'جزئي',
+                              pending: 'انتظار'
+                            };
+                            
+                            return (
+                              <td key={monthIdx} className="month-cell">
+                                <button
+                                  className={`status-btn ${status}`}
+                                  onClick={async () => {
+                                    const nextStatus = status === 'pending' ? 'partial' : status === 'partial' ? 'paid' : 'pending';
+                                    const updatedPayments = {
+                                      ...(customer.monthlyPayments || {}),
+                                      [yearMonth]: nextStatus
+                                    };
+                                    await setDoc(doc(db, 'customers', customer.id), {
+                                      ...customer,
+                                      monthlyPayments: updatedPayments
+                                    });
+                                  }}
+                                >
+                                  {statusLabels[status]}
+                                </button>
+                              </td>
+                            );
+                          })}
+                          <td className="total-cell">
+                            <span className="paid-count">{paidCount}</span>
+                            <span className="total-separator">/</span>
+                            <span className="total-months">12</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="yearly-summary">
+              <div className="summary-card">
+                <div className="summary-label">إجمالي العملاء</div>
+                <div className="summary-value">{customers.filter(c => !yearlyCityId || c.cityId === yearlyCityId).length}</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-label">إجمالي الاشتراكات الشهرية</div>
+                <div className="summary-value">
+                  {customers
+                    .filter(c => !yearlyCityId || c.cityId === yearlyCityId)
+                    .reduce((sum, c) => sum + (c.subscriptionValue ?? 0), 0)} ﷼
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -888,19 +1002,19 @@ function App() {
               </div>
               <div className="detail-row">
                 <span className="detail-label">قيمة الاشتراك:</span>
-                <span className="detail-value">{selectedCustomer.subscriptionValue ?? 0} ريال</span>
+                <span className="detail-value">{selectedCustomer.subscriptionValue ?? 0} ﷼</span>
               </div>
               <div className="detail-row">
                 <span className="detail-label">رسوم التأسيس:</span>
-                <span className="detail-value">{selectedCustomer.setupFeeTotal ?? 0} ريال</span>
+                <span className="detail-value">{selectedCustomer.setupFeeTotal ?? 0} ﷼</span>
               </div>
               <div className="detail-row">
                 <span className="detail-label">المدفوع:</span>
-                <span className="detail-value">{selectedCustomer.setupFeePaid ?? 0} ريال</span>
+                <span className="detail-value">{selectedCustomer.setupFeePaid ?? 0} ﷼</span>
               </div>
               <div className="detail-row highlight">
                 <span className="detail-label">المتبقي:</span>
-                <span className="detail-value">{(selectedCustomer.setupFeeTotal ?? 0) - (selectedCustomer.setupFeePaid ?? 0)} ريال</span>
+                <span className="detail-value">{(selectedCustomer.setupFeeTotal ?? 0) - (selectedCustomer.setupFeePaid ?? 0)} ﷼</span>
               </div>
               <div className="detail-row">
                 <span className="detail-label">IP Number (الراوتر الأساسي):</span>
@@ -1089,7 +1203,7 @@ function App() {
                 </div>
                 <div className="edit-field calculated">
                   <label>المتبقي</label>
-                  <span className="calculated-value">{(editingCustomer.setupFeeTotal ?? 0) - (editingCustomer.setupFeePaid ?? 0)} ريال</span>
+                  <span className="calculated-value">{(editingCustomer.setupFeeTotal ?? 0) - (editingCustomer.setupFeePaid ?? 0)} ﷼</span>
                 </div>
                 <div className="edit-field">
                   <label>IP Number</label>
