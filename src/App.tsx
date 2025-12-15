@@ -20,6 +20,7 @@ type Customer = {
   phone?: string;
   startDate?: string;
   subscriptionValue?: number;
+  subscriptionPaid?: number;
   setupFeeTotal?: number;
   setupFeePaid?: number;
   ipNumber?: string;
@@ -28,8 +29,10 @@ type Customer = {
   lap?: string;
   site?: string;
   notes?: string;
-  paymentStatus?: 'paid' | 'unpaid';
+  paymentStatus?: 'paid' | 'unpaid' | 'partial';
   monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
+  hasDiscount?: boolean;
+  discountAmount?: number;
 };
 
 const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
@@ -64,13 +67,19 @@ function App() {
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
+  const [invoiceMonth, setInvoiceMonth] = useState(new Date().getMonth() + 1);
+  const [invoiceYear, setInvoiceYear] = useState(new Date().getFullYear());
+  const [revenuesCityId, setRevenuesCityId] = useState<string | null>(null);
+  const [revenuesYear, setRevenuesYear] = useState(new Date().getFullYear());
+  const [revenuesMonth, setRevenuesMonth] = useState(new Date().getMonth() + 1);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
-  const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid'} | null>(null);
+  const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid' | 'partial'} | null>(null);
+  const [partialPaymentAmount, setPartialPaymentAmount] = useState('');
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{type: 'city' | 'customer'; id: string; name: string} | null>(null);
@@ -84,6 +93,11 @@ function App() {
   const [transferModal, setTransferModal] = useState(false);
   const [transferCustomer, setTransferCustomer] = useState<Customer | null>(null);
   const [transferCityId, setTransferCityId] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [discountCustomerId, setDiscountCustomerId] = useState('');
+  const [discountType, setDiscountType] = useState<'amount' | 'percentage'>('amount');
+  const [discountValue, setDiscountValue] = useState('');
+  const [discountSearch, setDiscountSearch] = useState('');
   const [transferPassword, setTransferPassword] = useState('');
   const [transferLoading, setTransferLoading] = useState(false);
 
@@ -107,6 +121,160 @@ function App() {
         : [],
     [customers, invoiceCityId]
   );
+
+  const revenuesData = useMemo(() => {
+    const yearMonth = `${revenuesYear}-${String(revenuesMonth).padStart(2, '0')}`;
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1;
+    const isFutureMonth = revenuesYear > currentYear || 
+      (revenuesYear === currentYear && revenuesMonth > currentMonth);
+
+    const cityCustomers = revenuesCityId
+      ? customers.filter((c) => c.cityId === revenuesCityId && c.subscriptionValue)
+      : customers.filter((c) => c.subscriptionValue);
+
+    const paid = cityCustomers.filter((c) => {
+      if (isFutureMonth) return false;
+      const monthStatus = c.monthlyPayments?.[yearMonth];
+      return monthStatus === 'paid';
+    });
+
+    const partial = cityCustomers.filter((c) => {
+      if (isFutureMonth) return false;
+      const monthStatus = c.monthlyPayments?.[yearMonth];
+      return monthStatus === 'partial';
+    });
+
+    const pending = cityCustomers.filter((c) => {
+      if (isFutureMonth) return true;
+      const monthStatus = c.monthlyPayments?.[yearMonth];
+      return monthStatus === 'pending' || monthStatus === undefined;
+    });
+
+    const paidAmount = paid.reduce((sum, c) => sum + (c.subscriptionValue || 0), 0);
+    const partialAmount = partial.reduce((sum, c) => sum + (c.subscriptionPaid || 0), 0);
+    const pendingAmount = pending.reduce((sum, c) => sum + (c.subscriptionValue || 0), 0);
+
+    return { paid, partial, pending, paidAmount, partialAmount, pendingAmount };
+  }, [customers, revenuesCityId, revenuesYear, revenuesMonth]);
+
+  // دالة البحث عن العملاء
+  const searchResults = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const query = searchQuery.trim().toLowerCase();
+    return customers.filter((c) => 
+      c.name.toLowerCase().includes(query) || 
+      (c.phone && c.phone.includes(query))
+    );
+  }, [customers, searchQuery]);
+
+  // دالة الانتقال للعميل
+  const navigateToCustomer = (customer: Customer) => {
+    setSelectedCityId(customer.cityId);
+    setSelectedCustomer(customer);
+    setShowCustomerModal(true);
+    setSearchQuery('');
+    setTimeout(() => {
+      const element = document.getElementById(`customer-${customer.id}`);
+      if (element) {
+        element.classList.add('highlight');
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => element.classList.remove('highlight'), 2000);
+      }
+    }, 0);
+  };
+
+  // دالة تطبيق الخصم
+  const applyDiscount = async () => {
+    if (!discountCustomerId) {
+      setToastMessage('اختر العميل أولاً');
+      return;
+    }
+    if (!discountValue || parseFloat(discountValue) <= 0) {
+      setToastMessage('أدخل قيمة الخصم');
+      return;
+    }
+
+    const customer = customers.find(c => c.id === discountCustomerId);
+    if (!customer) {
+      setToastMessage('العميل غير موجود');
+      return;
+    }
+
+    const currentValue = customer.subscriptionValue || 0;
+    let newValue: number;
+    let discountAmount: number;
+
+    if (discountType === 'percentage') {
+      const percentage = parseFloat(discountValue);
+      if (percentage > 100) {
+        setToastMessage('النسبة لا يمكن أن تتجاوز 100%');
+        return;
+      }
+      discountAmount = (currentValue * percentage) / 100;
+      newValue = currentValue - discountAmount;
+    } else {
+      discountAmount = parseFloat(discountValue);
+      if (discountAmount > currentValue) {
+        setToastMessage('قيمة الخصم أكبر من قيمة الاشتراك');
+        return;
+      }
+      newValue = currentValue - discountAmount;
+    }
+
+    try {
+      const updatedCustomer = {
+        ...customer,
+        subscriptionValue: newValue,
+        hasDiscount: true,
+        discountAmount: (customer.discountAmount || 0) + discountAmount,
+      };
+      
+      await setDoc(doc(db, 'customers', customer.id), updatedCustomer);
+      
+      setCustomers(customers.map(c => 
+        c.id === customer.id ? updatedCustomer : c
+      ));
+      
+      setToastMessage(`تم تطبيق خصم ${discountAmount.toFixed(0)} ﷼ على ${customer.name}. القيمة الجديدة: ${newValue.toFixed(0)} ﷼`);
+      setDiscountCustomerId('');
+      setDiscountValue('');
+    } catch (error) {
+      setToastMessage('خطأ في تطبيق الخصم');
+      console.error(error);
+    }
+  };
+
+  // دالة إزالة الخصم
+  const removeDiscount = async (customer: Customer) => {
+    if (!customer.hasDiscount || !customer.discountAmount) {
+      setToastMessage('هذا العميل ليس لديه خصم');
+      return;
+    }
+
+    const newValue = (customer.subscriptionValue || 0) + (customer.discountAmount || 0);
+    
+    try {
+      const updatedCustomer = {
+        ...customer,
+        subscriptionValue: newValue,
+        hasDiscount: false,
+        discountAmount: 0,
+      };
+      
+      await setDoc(doc(db, 'customers', customer.id), updatedCustomer);
+      
+      setCustomers(customers.map(c => 
+        c.id === customer.id ? updatedCustomer : c
+      ));
+      
+      setToastMessage(`تم إزالة الخصم من ${customer.name}. القيمة الجديدة: ${newValue.toFixed(0)} ﷼`);
+    } catch (error) {
+      setToastMessage('خطأ في إزالة الخصم');
+      console.error(error);
+    }
+  };
 
   // Listen for auth state changes (persist login on refresh)
   useEffect(() => {
@@ -223,6 +391,28 @@ function App() {
       return;
     }
 
+    // التحقق من عدم تكرار userName في نفس المدينة
+    if (userName) {
+      const existingUserName = customers.find(
+        c => c.cityId === selectedCityId && c.userName === userName
+      );
+      if (existingUserName) {
+        setToastMessage(`User Name "${userName}" موجود مسبقاً في هذه المدينة للعميل: ${existingUserName.name}`);
+        return;
+      }
+    }
+
+    // التحقق من عدم تكرار ipNumber في نفس المدينة
+    if (ipNumber) {
+      const existingIpNumber = customers.find(
+        c => c.cityId === selectedCityId && c.ipNumber === ipNumber
+      );
+      if (existingIpNumber) {
+        setToastMessage(`IP Number "${ipNumber}" موجود مسبقاً في هذه المدينة للعميل: ${existingIpNumber.name}`);
+        return;
+      }
+    }
+
     const customerId = Math.random().toString(36).slice(2);
     
     // Build customer data without undefined values (Firestore doesn't accept undefined)
@@ -321,22 +511,52 @@ function App() {
     }
   };
 
-  const handleTogglePaymentStatus = (customer: Customer, newStatus: 'paid' | 'unpaid') => {
-    setConfirmStatusChange({ customer, newStatus });
+  const handleTogglePaymentStatus = (customer: Customer, newStatus: 'paid' | 'unpaid' | 'partial') => {
+    if (newStatus === 'partial') {
+      setConfirmStatusChange({ customer, newStatus });
+      setPartialPaymentAmount(String(customer.subscriptionPaid || ''));
+    } else {
+      setConfirmStatusChange({ customer, newStatus });
+      setPartialPaymentAmount('');
+    }
   };
 
   const confirmPaymentStatusChange = async () => {
     if (!confirmStatusChange) return;
     
     try {
-      await setDoc(doc(db, 'customers', confirmStatusChange.customer.id), {
+      const today = new Date();
+      const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
+      const currentYear = today.getFullYear();
+      const yearMonth = `${currentYear}-${currentMonth}`;
+      
+      const updatedPayments = { ...(confirmStatusChange.customer.monthlyPayments || {}) };
+      // Convert unpaid to pending for monthlyPayments
+      const monthlyStatus = confirmStatusChange.newStatus === 'unpaid' ? 'pending' : confirmStatusChange.newStatus;
+      updatedPayments[yearMonth] = monthlyStatus as 'paid' | 'partial' | 'pending';
+      
+      const updatedCustomer: Customer = {
         ...confirmStatusChange.customer,
         paymentStatus: confirmStatusChange.newStatus,
-      });
+        monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending'>,
+      };
       
-      const statusText = confirmStatusChange.newStatus === 'paid' ? 'مدفوع' : 'غير مسدد';
-      setToastMessage(`تم تغيير حالة ${confirmStatusChange.customer.name} إلى ${statusText}`);
+      if (confirmStatusChange.newStatus === 'partial' && partialPaymentAmount) {
+        updatedCustomer.subscriptionPaid = parseFloat(partialPaymentAmount);
+      }
+      
+      await setDoc(doc(db, 'customers', confirmStatusChange.customer.id), updatedCustomer);
+      
+      // تحديث الحالة المحلية
+      if (selectedCustomer?.id === confirmStatusChange.customer.id) {
+        setSelectedCustomer(updatedCustomer);
+      }
+      setCustomers(customers.map(c => c.id === confirmStatusChange.customer.id ? updatedCustomer : c));
+      
+      const statusMap = { paid: 'مدفوع', unpaid: 'غير مسدد', partial: 'مدفوع جزئي' };
+      setToastMessage(`تم تغيير حالة ${confirmStatusChange.customer.name} إلى ${statusMap[confirmStatusChange.newStatus]}`);
       setConfirmStatusChange(null);
+      setPartialPaymentAmount('');
     } catch (error) {
       setToastMessage('خطأ في تغيير الحالة');
       console.error(error);
@@ -467,6 +687,28 @@ function App() {
   const saveEditedCustomer = async () => {
     if (!editingCustomer) return;
     
+    // التحقق من عدم تكرار userName في نفس المدينة
+    if (editingCustomer.userName) {
+      const existingUserName = customers.find(
+        c => c.cityId === editingCustomer.cityId && c.userName === editingCustomer.userName && c.id !== editingCustomer.id
+      );
+      if (existingUserName) {
+        setToastMessage(`User Name "${editingCustomer.userName}" موجود مسبقاً في هذه المدينة للعميل: ${existingUserName.name}`);
+        return;
+      }
+    }
+
+    // التحقق من عدم تكرار ipNumber في نفس المدينة
+    if (editingCustomer.ipNumber) {
+      const existingIpNumber = customers.find(
+        c => c.cityId === editingCustomer.cityId && c.ipNumber === editingCustomer.ipNumber && c.id !== editingCustomer.id
+      );
+      if (existingIpNumber) {
+        setToastMessage(`IP Number "${editingCustomer.ipNumber}" موجود مسبقاً في هذه المدينة للعميل: ${existingIpNumber.name}`);
+        return;
+      }
+    }
+
     try {
       const { id, ...customerData } = editingCustomer;
       // Remove undefined values for Firestore
@@ -488,10 +730,22 @@ function App() {
   };
 
   // فاتورة التأسيس - تظهر رسوم التأسيس والمدفوع والمتبقي
-  const generateSetupInvoicePDF = async (customer: Customer) => {
+  const generateSetupInvoicePDF = async (customer: Customer, month?: number, year?: number) => {
     const html2pdf = (await import('html2pdf.js')).default;
     const city = cities.find((c) => c.id === customer.cityId);
     const setupRemaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
+    
+    const currentMonth = new Date().getMonth() + 1;
+    const currentYear = new Date().getFullYear();
+    let isPreviousMonth = false;
+    let monthName = '';
+    let invoiceDate = todayISO();
+    
+    if (month && year) {
+      isPreviousMonth = (year !== currentYear || month !== currentMonth);
+      monthName = MONTHS_AR[month - 1] + ' ' + year;
+      invoiceDate = `${year}-${String(month).padStart(2, '0')}-01`;
+    }
 
     const invoiceHTML = `
       <!DOCTYPE html>
@@ -532,14 +786,29 @@ function App() {
                   </svg>
                   <div>
                     <div class="company">DATA HUB</div>
-                    <div class="invoice-type">فاتورة تأسيس</div>
+                    <div class="invoice-type">${isPreviousMonth ? `فاتورة تأسيس سابقة لشهر: ${monthName}` : 'فاتورة تأسيس'}</div>
                   </div>
                 </div>
               </td>
               <td class="invoice-info" style="vertical-align: top;">
                 <div><strong>رقم الفاتورة:</strong> SET-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}</div>
-                <div><strong>التاريخ:</strong> ${formatDate(todayISO())}</div>
+                <div><strong>التاريخ:</strong> ${formatDate(invoiceDate)}</div>
               </td>
+            </tr>
+          </table>
+        </div>
+        
+        <div class="section">
+          <div class="section-title">معلومات العميل</div>
+          <table class="data-table">
+            <tr><td class="label">اسم العميل:</td><td class="value">${customer.name}</td></tr>
+            <tr><td class="label">رقم الجوال:</td><td class="value">${customer.phone || '-'}</td></tr>
+            <tr><td class="label">المدينة:</td><td class="value">${city?.name || '-'}</td></tr>
+          </table>
+        </div>
+        
+        <div class="section">
+          <div class="section-title">تفاصيل التأسيس</div>
           <table class="financial-table">
             <thead>
               <tr><th>البيان</th><th>المبلغ (﷼)</th></tr>
@@ -578,10 +847,32 @@ function App() {
   };
 
   // فاتورة الاشتراك - تظهر قيمة الاشتراك وحالة الدفع
-  const generateSubscriptionInvoicePDF = async (customer: Customer) => {
+  const generateSubscriptionInvoicePDF = async (customer: Customer, month?: number, year?: number) => {
     const html2pdf = (await import('html2pdf.js')).default;
     const city = cities.find((c) => c.id === customer.cityId);
-    const isPaid = customer.paymentStatus === 'paid';
+    
+    // إذا تم تحديد شهر وسنة، استخدم حالة الدفع من monthlyPayments
+    let paymentStatus: 'paid' | 'partial' | 'pending' = 'pending';
+    let invoiceDate = todayISO();
+    let monthName = '';
+    let isPreviousMonth = false;
+    
+    const currentMonth = new Date().getMonth() + 1;
+    const currentYear = new Date().getFullYear();
+    
+    if (month && year) {
+      const yearMonth = `${year}-${String(month).padStart(2, '0')}`;
+      paymentStatus = customer.monthlyPayments?.[yearMonth] || 'pending';
+      invoiceDate = `${year}-${String(month).padStart(2, '0')}-01`;
+      monthName = MONTHS_AR[month - 1] + ' ' + year;
+      // تحقق إذا كان الشهر/السنة مختلفة عن الحالية
+      isPreviousMonth = (year !== currentYear || month !== currentMonth);
+    } else {
+      paymentStatus = customer.paymentStatus === 'paid' ? 'paid' : customer.paymentStatus === 'partial' ? 'partial' : 'pending';
+    }
+    
+    const isPaid = paymentStatus === 'paid';
+    const isPartial = paymentStatus === 'partial';
 
     const invoiceHTML = `
       <!DOCTYPE html>
@@ -609,10 +900,12 @@ function App() {
           .status-box { border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0; }
           .status-paid { background: #dcfce7; border: 2px solid #22c55e; }
           .status-unpaid { background: #fee2e2; border: 2px solid #ef4444; }
+          .status-partial { background: #fef3c7; border: 2px solid #f59e0b; }
           .status-label { font-size: 14px; color: #64748b; margin-bottom: 10px; }
           .status-value { font-size: 24px; font-weight: 700; }
           .status-paid .status-value { color: #16a34a; }
           .status-unpaid .status-value { color: #dc2626; }
+          .status-partial .status-value { color: #d97706; }
           .footer { text-align: center; padding-top: 20px; margin-top: 30px; border-top: 2px solid #e2e8f0; font-size: 11px; color: #64748b; }
         </style>
       </head>
@@ -628,13 +921,13 @@ function App() {
                   </svg>
                   <div>
                     <div class="company">DATA HUB</div>
-                    <div class="invoice-type">فاتورة اشتراك شهري</div>
+                    <div class="invoice-type">${isPreviousMonth ? `فاتورة سابقة لشهر: ${monthName}` : 'فاتورة اشتراك شهري'}</div>
                   </div>
                 </div>
               </td>
               <td class="invoice-info" style="vertical-align: top;">
                 <div><strong>رقم الفاتورة:</strong> SUB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}</div>
-                <div><strong>التاريخ:</strong> ${formatDate(todayISO())}</div>
+                <div><strong>التاريخ:</strong> ${formatDate(invoiceDate)}</div>
               </td>
             </tr>
           </table>
@@ -656,9 +949,9 @@ function App() {
           <div class="subscription-value">${customer.subscriptionValue ?? 0} ﷼</div>
         </div>
         
-        <div class="status-box ${isPaid ? 'status-paid' : 'status-unpaid'}">
+        <div class="status-box ${isPaid ? 'status-paid' : isPartial ? 'status-partial' : 'status-unpaid'}">
           <div class="status-label">حالة السداد</div>
-          <div class="status-value">${isPaid ? '✓ مدفوع' : '✗ غير مسدد'}</div>
+          <div class="status-value">${isPaid ? '✓ مدفوع' : isPartial ? '◐ جزئي' : '✗ غير مسدد'}</div>
         </div>
         
         ${customer.notes ? `
@@ -768,6 +1061,31 @@ function App() {
           </svg>
           <div className="brand-text">DATA HUB</div>
         </div>
+        <div className="search-box">
+          <input 
+            type="text"
+            placeholder="ابحث عن عميل بالاسم أو الرقم..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="search-input"
+          />
+          {searchQuery && searchResults.length > 0 && (
+            <div className="search-results">
+              {searchResults.map(customer => {
+                const city = cities.find(c => c.id === customer.cityId);
+                return (
+                  <div key={customer.id} className="search-result-item" onClick={() => navigateToCustomer(customer)}>
+                    <div className="result-name">{customer.name}</div>
+                    <div className="result-details">
+                      {customer.phone && <span>{customer.phone}</span>}
+                      {city && <span className="result-city">{city.name}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <button onClick={handleLogout} className="btn secondary">تسجيل خروج</button>
       </header>
 
@@ -775,6 +1093,8 @@ function App() {
         <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>لوحة التحكم</button>
         <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>الفواتير</button>
         <button className={`tab-btn ${activeTab === 'yearly' ? 'active' : ''}`} onClick={() => setActiveTab('yearly')}>متابعة الاشتراكات</button>
+        <button className={`tab-btn ${activeTab === 'revenues' ? 'active' : ''}`} onClick={() => setActiveTab('revenues')}>الإيرادات</button>
+        <button className={`tab-btn ${activeTab === 'discounts' ? 'active' : ''}`} onClick={() => setActiveTab('discounts')}>الخصومات</button>
       </div>
 
       {loading ? (
@@ -870,21 +1190,34 @@ function App() {
                 <div className="customer-list">
                   {filteredCustomers.map((customer) => {
                     const remaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
-                    const isPaid = customer.paymentStatus === 'paid';
                     return (
-                    <div key={customer.id} className="customer-card">
+                    <div key={customer.id} id={`customer-${customer.id}`} className="customer-card">
                       <div className="customer-header">
-                        <strong>{customer.name}</strong>
+                        <strong>{customer.hasDiscount && <span className="discount-badge">🏷️</span>}{customer.name}</strong>
+                        <div className="payment-buttons">
+                          <button 
+                            onClick={() => handleTogglePaymentStatus(customer, 'paid')} 
+                            className={`payment-btn ${customer.paymentStatus === 'paid' ? 'active' : ''}`}
+                          >
+                            مدفوع
+                          </button>
+                          <button 
+                            onClick={() => handleTogglePaymentStatus(customer, 'partial')} 
+                            className={`payment-btn ${customer.paymentStatus === 'partial' ? 'active' : ''}`}
+                          >
+                            جزئي
+                          </button>
+                          <button 
+                            onClick={() => handleTogglePaymentStatus(customer, 'unpaid')} 
+                            className={`payment-btn ${customer.paymentStatus === 'unpaid' ? 'active' : ''}`}
+                          >
+                            غير مسدد
+                          </button>
+                        </div>
                         <div className="customer-actions-top">
                           <button onClick={() => openCustomerDetails(customer)} className="btn info btn-sm">معلومات</button>
                           <button onClick={() => openEditCustomer(customer)} className="btn edit btn-sm">تعديل</button>
                           <button onClick={() => openTransferCustomer(customer)} className="btn primary btn-sm">نقل</button>
-                          <button 
-                            onClick={() => handleTogglePaymentStatus(customer, isPaid ? 'unpaid' : 'paid')} 
-                            className={`btn btn-sm ${isPaid ? 'success' : 'warning'}`}
-                          >
-                            {isPaid ? '✓ مدفوع' : '✗ غير مسدد'}
-                          </button>
                         </div>
                       </div>
                       <div className="small">{customer.phone || '-'} • {customer.ipNumber || '-'}</div>
@@ -906,21 +1239,46 @@ function App() {
         {activeTab === 'invoices' && (
           <div className="section">
             <h2>الفواتير</h2>
-            <select value={invoiceCityId || ''} onChange={(e) => setInvoiceCityId(e.target.value || null)} className="input">
-              <option value="">اختر مدينة</option>
-              {cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}
-            </select>
+            <div className="invoice-filters">
+              <select value={invoiceCityId || ''} onChange={(e) => setInvoiceCityId(e.target.value || null)} className="input">
+                <option value="">اختر مدينة</option>
+                {cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}
+              </select>
+              
+              <div className="invoice-date-selector">
+                <label>شهر الفاتورة:</label>
+                <div className="date-inputs">
+                  <select value={invoiceMonth} onChange={(e) => setInvoiceMonth(Number(e.target.value))} className="input">
+                    {MONTHS_AR.map((month, idx) => (
+                      <option key={idx} value={idx + 1}>{month}</option>
+                    ))}
+                  </select>
+                  <div className="year-selector">
+                    <button className="btn-year" onClick={() => setInvoiceYear(y => y - 1)}>◀</button>
+                    <span className="year-display">{invoiceYear}</span>
+                    <button className="btn-year" onClick={() => setInvoiceYear(y => y + 1)}>▶</button>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <div className="invoice-list">
               {invoiceFilteredCustomers.map((customer) => {
                 const remaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
+                const yearMonth = `${invoiceYear}-${String(invoiceMonth).padStart(2, '0')}`;
+                const monthStatus = customer.monthlyPayments?.[yearMonth] || 'pending';
+                const statusLabel = monthStatus === 'paid' ? '✓ مدفوع' : monthStatus === 'partial' ? '◐ جزئي' : '✗ غير مسدد';
+                const statusClass = monthStatus === 'paid' ? 'status-paid' : monthStatus === 'partial' ? 'status-partial' : 'status-unpaid';
                 return (
                 <div key={customer.id} className="invoice-card">
                   <div><strong>{customer.name}</strong></div>
                   <div className="small">المتبقي: {remaining} ﷼</div>
+                  <div className={`invoice-month-status ${statusClass}`}>
+                    {MONTHS_AR[invoiceMonth - 1]}: {statusLabel}
+                  </div>
                   <div className="actions">
-                    <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">فاتورة التأسيس</button>
-                    <button onClick={() => generateSubscriptionInvoicePDF(customer)} className="btn primary">فاتورة الاشتراك</button>
+                    <button onClick={() => generateSetupInvoicePDF(customer, invoiceMonth, invoiceYear)} className="btn warning">فاتورة التأسيس</button>
+                    <button onClick={() => generateSubscriptionInvoicePDF(customer, invoiceMonth, invoiceYear)} className="btn primary">فاتورة الاشتراك</button>
                   </div>
                 </div>
                 );
@@ -1214,10 +1572,21 @@ function App() {
             <div className="modal-body">
               <p className="confirm-text">
                 هل تريد تغيير حالة <strong>{confirmStatusChange.customer.name}</strong> إلى{' '}
-                <strong className={confirmStatusChange.newStatus === 'paid' ? 'text-success' : 'text-warning'}>
-                  {confirmStatusChange.newStatus === 'paid' ? 'مدفوع' : 'غير مسدد'}
+                <strong className={confirmStatusChange.newStatus === 'paid' ? 'text-success' : confirmStatusChange.newStatus === 'partial' ? 'text-info' : 'text-warning'}>
+                  {confirmStatusChange.newStatus === 'paid' ? 'مدفوع' : confirmStatusChange.newStatus === 'partial' ? 'مدفوع جزئي' : 'غير مسدد'}
                 </strong>؟
               </p>
+              {confirmStatusChange.newStatus === 'partial' && (
+                <div className="edit-field">
+                  <label>المبلغ المدفوع</label>
+                  <input 
+                    type="number" 
+                    value={partialPaymentAmount}
+                    onChange={(e) => setPartialPaymentAmount(e.target.value)}
+                    placeholder="أدخل المبلغ المدفوع"
+                  />
+                </div>
+              )}
             </div>
             <div className="modal-footer">
               <button onClick={() => setConfirmStatusChange(null)} className="btn secondary">إلغاء</button>
@@ -1330,6 +1699,291 @@ function App() {
           </div>
         </div>
       )}
+
+        {activeTab === 'revenues' && (
+          <div className="section revenues-section">
+            <div className="revenues-header">
+              <h2>الإيرادات الشهرية</h2>
+              <div className="revenues-controls">
+                <select value={revenuesCityId || ''} onChange={(e) => setRevenuesCityId(e.target.value || null)}>
+                  <option value="">جميع المدن</option>
+                  {cities.map(city => <option key={city.id} value={city.id}>{city.name}</option>)}
+                </select>
+                <div className="year-selector">
+                  <button className="btn-month" onClick={() => setRevenuesYear(y => y - 1)}>◀</button>
+                  <span className="year-display">{revenuesYear}</span>
+                  <button className="btn-month" onClick={() => setRevenuesYear(y => y + 1)}>▶</button>
+                </div>
+                <div className="month-year-selector">
+                  <button className="btn-month" onClick={() => setRevenuesMonth(m => m === 1 ? 12 : m - 1)}>◀</button>
+                  <span className="month-display">{MONTHS_AR[revenuesMonth - 1]}</span>
+                  <button className="btn-month" onClick={() => setRevenuesMonth(m => m === 12 ? 1 : m + 1)}>▶</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="revenues-summary">
+              <div className="revenue-card paid">
+                <div className="revenue-label">الإيرادات المستحصلة</div>
+                <div className="revenue-amount">{revenuesData.paidAmount.toFixed(0)} ﷼</div>
+                <div className="revenue-count">{revenuesData.paid.length} عميل</div>
+              </div>
+              <div className="revenue-card partial">
+                <div className="revenue-label">الإيرادات الجزئية</div>
+                <div className="revenue-amount">{revenuesData.partialAmount.toFixed(0)} ﷼</div>
+                <div className="revenue-count">{revenuesData.partial.length} عميل</div>
+              </div>
+              <div className="revenue-card pending">
+                <div className="revenue-label">الإيرادات المتأخرة</div>
+                <div className="revenue-amount">{revenuesData.pendingAmount.toFixed(0)} ﷼</div>
+                <div className="revenue-count">{revenuesData.pending.length} عميل</div>
+              </div>
+            </div>
+
+            <div className="revenues-list">
+              <div className="revenues-section-title">المستحصلة</div>
+              <table className="revenues-table">
+                <thead>
+                  <tr>
+                    <th>اسم العميل</th>
+                    <th>المدينة</th>
+                    <th>رقم الهاتف</th>
+                    <th>المبلغ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {revenuesData.paid.map(customer => {
+                    const city = cities.find(c => c.id === customer.cityId);
+                    return (
+                      <tr key={customer.id}>
+                        <td>{customer.name}</td>
+                        <td>{city?.name || '-'}</td>
+                        <td>{customer.phone || '-'}</td>
+                        <td>{customer.subscriptionValue} ﷼</td>
+                      </tr>
+                    );
+                  })}
+                  {revenuesData.paid.length === 0 && (
+                    <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات مستحصلة</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="revenues-list">
+              <div className="revenues-section-title">الإيرادات الجزئية</div>
+              <table className="revenues-table">
+                <thead>
+                  <tr>
+                    <th>اسم العميل</th>
+                    <th>المدينة</th>
+                    <th>رقم الهاتف</th>
+                    <th>قيمة الاشتراك</th>
+                    <th>المستحصل</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {revenuesData.partial.map(customer => {
+                    const city = cities.find(c => c.id === customer.cityId);
+                    return (
+                      <tr key={customer.id}>
+                        <td>{customer.name}</td>
+                        <td>{city?.name || '-'}</td>
+                        <td>{customer.phone || '-'}</td>
+                        <td>{customer.subscriptionValue} ﷼</td>
+                        <td>{(customer.subscriptionPaid || 0).toFixed(0)} ﷼</td>
+                      </tr>
+                    );
+                  })}
+                  {revenuesData.partial.length === 0 && (
+                    <tr><td colSpan={5} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات جزئية</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="revenues-list">
+              <div className="revenues-section-title">الإيرادات المتأخرة</div>
+              <table className="revenues-table">
+                <thead>
+                  <tr>
+                    <th>اسم العميل</th>
+                    <th>المدينة</th>
+                    <th>رقم الهاتف</th>
+                    <th>المبلغ المتأخر</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {revenuesData.pending.map(customer => {
+                    const city = cities.find(c => c.id === customer.cityId);
+                    return (
+                      <tr key={customer.id}>
+                        <td>{customer.name}</td>
+                        <td>{city?.name || '-'}</td>
+                        <td>{customer.phone || '-'}</td>
+                        <td>{customer.subscriptionValue} ﷼</td>
+                      </tr>
+                    );
+                  })}
+                  {revenuesData.pending.length === 0 && (
+                    <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات متأخرة</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'discounts' && (
+          <div className="section discounts-section">
+            <h2>تطبيق الخصومات</h2>
+            <div className="discount-form">
+              <div className="discount-row">
+                <div className="discount-field">
+                  <label>ابحث عن العميل</label>
+                  <input 
+                    type="text"
+                    value={discountSearch}
+                    onChange={(e) => setDiscountSearch(e.target.value)}
+                    placeholder="ابحث بالاسم..."
+                    className="input"
+                  />
+                </div>
+              </div>
+
+              <div className="discount-row">
+                <div className="discount-field">
+                  <label>اختر العميل</label>
+                  <select 
+                    value={discountCustomerId} 
+                    onChange={(e) => setDiscountCustomerId(e.target.value)}
+                    className="input"
+                  >
+                    <option value="">-- اختر عميل --</option>
+                    {customers
+                      .filter(c => !discountSearch || c.name.toLowerCase().includes(discountSearch.toLowerCase()))
+                      .map(customer => {
+                        const city = cities.find(c => c.id === customer.cityId);
+                        return (
+                          <option key={customer.id} value={customer.id}>
+                            {customer.hasDiscount ? '🏷️ ' : ''}{customer.name} - {city?.name || ''} ({customer.subscriptionValue || 0} ﷼)
+                          </option>
+                        );
+                      })}
+                  </select>
+                </div>
+              </div>
+
+              <div className="discount-row">
+                <div className="discount-field">
+                  <label>نوع الخصم</label>
+                  <div className="discount-type-buttons">
+                    <button 
+                      className={`discount-type-btn ${discountType === 'amount' ? 'active' : ''}`}
+                      onClick={() => setDiscountType('amount')}
+                    >
+                      قيمة ثابتة (﷼)
+                    </button>
+                    <button 
+                      className={`discount-type-btn ${discountType === 'percentage' ? 'active' : ''}`}
+                      onClick={() => setDiscountType('percentage')}
+                    >
+                      نسبة مئوية (%)
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="discount-row">
+                <div className="discount-field">
+                  <label>{discountType === 'percentage' ? 'نسبة الخصم (%)' : 'قيمة الخصم (﷼)'}</label>
+                  <input 
+                    type="number" 
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(e.target.value)}
+                    placeholder={discountType === 'percentage' ? 'مثال: 10' : 'مثال: 50'}
+                    className="input"
+                  />
+                </div>
+              </div>
+
+              {discountCustomerId && discountValue && (
+                <div className="discount-preview">
+                  {(() => {
+                    const customer = customers.find(c => c.id === discountCustomerId);
+                    if (!customer) return null;
+                    const currentValue = customer.subscriptionValue || 0;
+                    const discount = discountType === 'percentage' 
+                      ? (currentValue * parseFloat(discountValue || '0')) / 100
+                      : parseFloat(discountValue || '0');
+                    const newValue = currentValue - discount;
+                    return (
+                      <div className="preview-card">
+                        <div className="preview-row">
+                          <span>قيمة الاشتراك الحالية:</span>
+                          <span className="current-value">{currentValue} ﷼</span>
+                        </div>
+                        <div className="preview-row">
+                          <span>قيمة الخصم:</span>
+                          <span className="discount-value">- {discount.toFixed(0)} ﷼</span>
+                        </div>
+                        <div className="preview-row total">
+                          <span>قيمة الاشتراك الجديدة:</span>
+                          <span className="new-value">{newValue.toFixed(0)} ﷼</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              <button onClick={applyDiscount} className="btn primary apply-discount-btn">
+                تطبيق الخصم
+              </button>
+            </div>
+
+            {/* قائمة العملاء المخصوم لهم */}
+            <div className="discounted-customers">
+              <h3>🏷️ العملاء المخصوم لهم</h3>
+              {customers.filter(c => c.hasDiscount).length === 0 ? (
+                <p className="no-discounts">لا يوجد عملاء مخصوم لهم حالياً</p>
+              ) : (
+                <table className="discounted-table">
+                  <thead>
+                    <tr>
+                      <th>اسم العميل</th>
+                      <th>المدينة</th>
+                      <th>قيمة الخصم</th>
+                      <th>قيمة الاشتراك الحالية</th>
+                      <th>إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customers.filter(c => c.hasDiscount).map(customer => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      return (
+                        <tr key={customer.id}>
+                          <td>🏷️ {customer.name}</td>
+                          <td>{city?.name || '-'}</td>
+                          <td className="discount-cell">{customer.discountAmount || 0} ﷼</td>
+                          <td>{customer.subscriptionValue || 0} ﷼</td>
+                          <td>
+                            <button 
+                              onClick={() => removeDiscount(customer)} 
+                              className="btn danger btn-sm"
+                            >
+                              إزالة الخصم
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
 
       {/* Transfer Customer Modal */}
       {transferModal && transferCustomer && (
