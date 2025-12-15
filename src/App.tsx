@@ -81,6 +81,11 @@ function App() {
   const [editPassword, setEditPassword] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [pendingEditCustomer, setPendingEditCustomer] = useState<Customer | null>(null);
+  const [transferModal, setTransferModal] = useState(false);
+  const [transferCustomer, setTransferCustomer] = useState<Customer | null>(null);
+  const [transferCityId, setTransferCityId] = useState('');
+  const [transferPassword, setTransferPassword] = useState('');
+  const [transferLoading, setTransferLoading] = useState(false);
 
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
@@ -347,6 +352,60 @@ function App() {
     setPendingEditCustomer(customer);
     setEditPasswordModal(true);
     setEditPassword('');
+  };
+
+  const openTransferCustomer = (customer: Customer) => {
+    setTransferCustomer(customer);
+    setTransferCityId('');
+    setTransferPassword('');
+    setTransferModal(true);
+  };
+
+  const confirmTransferCustomer = async () => {
+    if (!transferCustomer || !transferCityId || !transferPassword.trim()) {
+      setToastMessage('يرجى اختيار المدينة وإدخال كلمة المرور');
+      return;
+    }
+
+    if (transferCityId === transferCustomer.cityId) {
+      setToastMessage('العميل موجود بالفعل في هذه المدينة');
+      return;
+    }
+
+    setTransferLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) {
+        setToastMessage('خطأ في المصادقة');
+        return;
+      }
+
+      // التحقق من كلمة المرور
+      const credential = EmailAuthProvider.credential(user.email, transferPassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // نقل العميل للمدينة الجديدة
+      await setDoc(doc(db, 'customers', transferCustomer.id), {
+        ...transferCustomer,
+        cityId: transferCityId,
+      });
+
+      const newCity = cities.find(c => c.id === transferCityId);
+      setToastMessage(`تم نقل ${transferCustomer.name} إلى ${newCity?.name}`);
+      setTransferModal(false);
+      setTransferCustomer(null);
+      setTransferCityId('');
+      setTransferPassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في نقل العميل');
+        console.error(error);
+      }
+    } finally {
+      setTransferLoading(false);
+    }
   };
 
   const confirmEditPassword = async () => {
@@ -819,6 +878,7 @@ function App() {
                         <div className="customer-actions-top">
                           <button onClick={() => openCustomerDetails(customer)} className="btn info btn-sm">معلومات</button>
                           <button onClick={() => openEditCustomer(customer)} className="btn edit btn-sm">تعديل</button>
+                          <button onClick={() => openTransferCustomer(customer)} className="btn primary btn-sm">نقل</button>
                           <button 
                             onClick={() => handleTogglePaymentStatus(customer, isPaid ? 'unpaid' : 'paid')} 
                             className={`btn btn-sm ${isPaid ? 'success' : 'warning'}`}
@@ -1266,6 +1326,56 @@ function App() {
             <div className="modal-footer">
               <button onClick={() => setShowEditModal(false)} className="btn secondary">إلغاء</button>
               <button onClick={saveEditedCustomer} className="btn primary">حفظ التعديلات</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Transfer Customer Modal */}
+      {transferModal && transferCustomer && (
+        <div className="modal-overlay" onClick={() => setTransferModal(false)}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>نقل العميل إلى مدينة أخرى</h3>
+              <button onClick={() => setTransferModal(false)} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text">
+                نقل العميل <strong>{transferCustomer.name}</strong> إلى مدينة جديدة
+              </p>
+              <div className="edit-field">
+                <label>اختر المدينة الجديدة</label>
+                <select 
+                  value={transferCityId} 
+                  onChange={(e) => setTransferCityId(e.target.value)}
+                  className="input"
+                >
+                  <option value="">-- اختر المدينة --</option>
+                  {cities
+                    .filter(city => city.id !== transferCustomer.cityId)
+                    .map(city => (
+                      <option key={city.id} value={city.id}>{city.name}</option>
+                    ))}
+                </select>
+              </div>
+              <div className="edit-field">
+                <label>كلمة المرور للتأكيد</label>
+                <input 
+                  type="password" 
+                  value={transferPassword}
+                  onChange={(e) => setTransferPassword(e.target.value)}
+                  placeholder="أدخل كلمة المرور"
+                  className="input"
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => setTransferModal(false)} className="btn secondary" disabled={transferLoading}>
+                إلغاء
+              </button>
+              <button onClick={confirmTransferCustomer} className="btn primary" disabled={transferLoading}>
+                {transferLoading ? 'جاري النقل...' : 'تأكيد النقل'}
+              </button>
             </div>
           </div>
         </div>
