@@ -33,6 +33,18 @@ type Customer = {
   monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
   hasDiscount?: boolean;
   discountAmount?: number;
+  isSuspended?: boolean;
+  suspendedDate?: string;
+};
+
+type Expense = {
+  id: string;
+  name: string;
+  description?: string;
+  amount: number;
+  date: string;
+  month: number;
+  year: number;
 };
 
 const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
@@ -67,7 +79,7 @@ function App() {
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
@@ -78,7 +90,7 @@ function App() {
   const [revenuesMonth, setRevenuesMonth] = useState(new Date().getMonth() + 1);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
-  const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid' | 'partial'} | null>(null);
+  const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid' | 'partial'; yearMonth?: string} | null>(null);
   const [partialPaymentAmount, setPartialPaymentAmount] = useState('');
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -100,6 +112,13 @@ function App() {
   const [discountSearch, setDiscountSearch] = useState('');
   const [transferPassword, setTransferPassword] = useState('');
   const [transferLoading, setTransferLoading] = useState(false);
+  
+  // المصروفات
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [expenseName, setExpenseName] = useState('');
+  const [expenseDescription, setExpenseDescription] = useState('');
+  const [expenseAmount, setExpenseAmount] = useState('');
+  const [expenseDate, setExpenseDate] = useState(todayISO());
 
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
@@ -130,9 +149,10 @@ function App() {
     const isFutureMonth = revenuesYear > currentYear || 
       (revenuesYear === currentYear && revenuesMonth > currentMonth);
 
+    // استثناء العملاء الموقوفين من الحسابات
     const cityCustomers = revenuesCityId
-      ? customers.filter((c) => c.cityId === revenuesCityId && c.subscriptionValue)
-      : customers.filter((c) => c.subscriptionValue);
+      ? customers.filter((c) => c.cityId === revenuesCityId && c.subscriptionValue && !c.isSuspended)
+      : customers.filter((c) => c.subscriptionValue && !c.isSuspended);
 
     const paid = cityCustomers.filter((c) => {
       if (isFutureMonth) return false;
@@ -184,6 +204,65 @@ function App() {
       }
     }, 0);
   };
+
+  // دالة حساب عدد الأيام من تاريخ بدء الاشتراك
+  const getDaysSinceStart = (startDate?: string): number => {
+    if (!startDate) return 0;
+    try {
+      const start = new Date(startDate);
+      if (isNaN(start.getTime())) return 0;
+      const today = new Date();
+      start.setHours(0, 0, 0, 0);
+      today.setHours(0, 0, 0, 0);
+      const diffTime = today.getTime() - start.getTime();
+      const days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      return days >= 0 ? days : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  // حساب عدد الأيام منذ بداية الشهر الحالي
+  const getDaysSinceMonthStart = (startDate?: string): number => {
+    if (!startDate) return 0;
+    try {
+      const start = new Date(startDate);
+      if (isNaN(start.getTime())) return 0;
+      const today = new Date();
+      const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      
+      // إذا كان تاريخ البدء قبل بداية الشهر الحالي، نحسب من بداية الشهر
+      const effectiveStart = start < currentMonthStart ? currentMonthStart : start;
+      
+      effectiveStart.setHours(0, 0, 0, 0);
+      today.setHours(0, 0, 0, 0);
+      
+      const diffTime = today.getTime() - effectiveStart.getTime();
+      const days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      return days >= 0 ? days : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  // الفواتير المستحقة - العملاء الذين مر عليهم 30 يوم في الشهر الحالي ولم يدفعوا بعد
+  const dueInvoices = useMemo(() => {
+    const today = new Date();
+    const currentYearMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    
+    return customers.filter(c => {
+      if (!c.startDate) return false;
+      // استثناء العملاء الموقوفين
+      if (c.isSuspended) return false;
+      
+      // إذا كان الشهر الحالي مدفوع، لا يظهر في الجدول
+      const monthStatus = c.monthlyPayments?.[currentYearMonth];
+      if (monthStatus === 'paid') return false;
+      
+      const days = getDaysSinceMonthStart(c.startDate);
+      return days >= 30;
+    });
+  }, [customers]);
 
   // دالة تطبيق الخصم
   const applyDiscount = async () => {
@@ -276,6 +355,80 @@ function App() {
     }
   };
 
+  // دالة إيقاف/تفعيل العميل
+  const toggleSuspend = async (customer: Customer) => {
+    try {
+      const newIsSuspended = !customer.isSuspended;
+      const updatedCustomer: Customer = {
+        ...customer,
+        isSuspended: newIsSuspended,
+        suspendedDate: newIsSuspended ? todayISO() : '',
+      };
+      
+      await setDoc(doc(db, 'customers', customer.id), updatedCustomer);
+      
+      setCustomers(customers.map(c => 
+        c.id === customer.id ? updatedCustomer : c
+      ));
+      
+      const action = newIsSuspended ? 'إيقاف' : 'تفعيل';
+      setToastMessage(`تم ${action} ${customer.name}`);
+    } catch (error) {
+      setToastMessage('خطأ في تغيير حالة العميل');
+      console.error(error);
+    }
+  };
+
+  // دالة إضافة مصروف
+  const addExpense = async () => {
+    if (!expenseName.trim()) {
+      setToastMessage('أدخل اسم المصروف');
+      return;
+    }
+    if (!expenseAmount || parseFloat(expenseAmount) <= 0) {
+      setToastMessage('أدخل قيمة المصروف');
+      return;
+    }
+
+    try {
+      const date = new Date(expenseDate);
+      const expense: Expense = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+        name: expenseName.trim(),
+        description: expenseDescription.trim() || undefined,
+        amount: parseFloat(expenseAmount),
+        date: expenseDate,
+        month: date.getMonth() + 1,
+        year: date.getFullYear(),
+      };
+
+      await setDoc(doc(db, 'expenses', expense.id), expense);
+      setExpenses([...expenses, expense]);
+      
+      setExpenseName('');
+      setExpenseDescription('');
+      setExpenseAmount('');
+      setExpenseDate(todayISO());
+      
+      setToastMessage(`تم إضافة المصروف: ${expense.name}`);
+    } catch (error) {
+      setToastMessage('خطأ في إضافة المصروف');
+      console.error(error);
+    }
+  };
+
+  // دالة حذف مصروف
+  const deleteExpense = async (expense: Expense) => {
+    try {
+      await deleteDoc(doc(db, 'expenses', expense.id));
+      setExpenses(expenses.filter(e => e.id !== expense.id));
+      setToastMessage(`تم حذف المصروف: ${expense.name}`);
+    } catch (error) {
+      setToastMessage('خطأ في حذف المصروف');
+      console.error(error);
+    }
+  };
+
   // Listen for auth state changes (persist login on refresh)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -304,9 +457,16 @@ function App() {
       setLoading(false);
     });
 
+    // Listen to expenses collection
+    const unsubscribeExpenses = onSnapshot(collection(db, 'expenses'), (snapshot) => {
+      const expensesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Expense));
+      setExpenses(expensesData);
+    });
+
     return () => {
       unsubscribeCities();
       unsubscribeCustomers();
+      unsubscribeExpenses();
     };
   }, [isAuthenticated]);
 
@@ -525,21 +685,34 @@ function App() {
     if (!confirmStatusChange) return;
     
     try {
-      const today = new Date();
-      const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
-      const currentYear = today.getFullYear();
-      const yearMonth = `${currentYear}-${currentMonth}`;
+      // استخدم الشهر المحدد إذا كان موجوداً، وإلا استخدم الشهر الحالي
+      let yearMonth = confirmStatusChange.yearMonth;
+      if (!yearMonth) {
+        const today = new Date();
+        const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
+        const currentYear = today.getFullYear();
+        yearMonth = `${currentYear}-${currentMonth}`;
+      }
       
       const updatedPayments = { ...(confirmStatusChange.customer.monthlyPayments || {}) };
       // Convert unpaid to pending for monthlyPayments
       const monthlyStatus = confirmStatusChange.newStatus === 'unpaid' ? 'pending' : confirmStatusChange.newStatus;
       updatedPayments[yearMonth] = monthlyStatus as 'paid' | 'partial' | 'pending';
       
+      // تحديد paymentStatus بناءً على الشهر الحالي
+      const today = new Date();
+      const currentYearMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+      const isCurrentMonth = yearMonth === currentYearMonth;
+      
       const updatedCustomer: Customer = {
         ...confirmStatusChange.customer,
-        paymentStatus: confirmStatusChange.newStatus,
         monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending'>,
       };
+      
+      // تحديث paymentStatus فقط إذا كان الشهر الحالي
+      if (isCurrentMonth) {
+        updatedCustomer.paymentStatus = confirmStatusChange.newStatus;
+      }
       
       if (confirmStatusChange.newStatus === 'partial' && partialPaymentAmount) {
         updatedCustomer.subscriptionPaid = parseFloat(partialPaymentAmount);
@@ -951,7 +1124,7 @@ function App() {
         
         <div class="status-box ${isPaid ? 'status-paid' : isPartial ? 'status-partial' : 'status-unpaid'}">
           <div class="status-label">حالة السداد</div>
-          <div class="status-value">${isPaid ? '✓ مدفوع' : isPartial ? '◐ جزئي' : '✗ غير مسدد'}</div>
+          <div class="status-value">${isPaid ? '✓ مدفوع' : isPartial ? `◐ جزئي (${customer.subscriptionPaid || 0} ﷼)` : '✗ غير مسدد'}</div>
         </div>
         
         ${customer.notes ? `
@@ -1094,7 +1267,9 @@ function App() {
         <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>الفواتير</button>
         <button className={`tab-btn ${activeTab === 'yearly' ? 'active' : ''}`} onClick={() => setActiveTab('yearly')}>متابعة الاشتراكات</button>
         <button className={`tab-btn ${activeTab === 'revenues' ? 'active' : ''}`} onClick={() => setActiveTab('revenues')}>الإيرادات</button>
+        <button className={`tab-btn ${activeTab === 'expenses' ? 'active' : ''}`} onClick={() => setActiveTab('expenses')}>المصروفات</button>
         <button className={`tab-btn ${activeTab === 'discounts' ? 'active' : ''}`} onClick={() => setActiveTab('discounts')}>الخصومات</button>
+        <button className={`tab-btn ${activeTab === 'suspended' ? 'active' : ''}`} onClick={() => setActiveTab('suspended')}>إيقاف مؤقت</button>
       </div>
 
       {loading ? (
@@ -1191,9 +1366,13 @@ function App() {
                   {filteredCustomers.map((customer) => {
                     const remaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
                     return (
-                    <div key={customer.id} id={`customer-${customer.id}`} className="customer-card">
+                    <div key={customer.id} id={`customer-${customer.id}`} className={`customer-card ${customer.isSuspended ? 'suspended' : ''}`}>
                       <div className="customer-header">
-                        <strong>{customer.hasDiscount && <span className="discount-badge">🏷️</span>}{customer.name}</strong>
+                        <strong>
+                          {customer.isSuspended && <span className="suspended-badge">⛔</span>}
+                          {customer.hasDiscount && <span className="discount-badge">🏷️</span>}
+                          {customer.name}
+                        </strong>
                         <div className="payment-buttons">
                           <button 
                             onClick={() => handleTogglePaymentStatus(customer, 'paid')} 
@@ -1269,9 +1448,10 @@ function App() {
                 const monthStatus = customer.monthlyPayments?.[yearMonth] || 'pending';
                 const statusLabel = monthStatus === 'paid' ? '✓ مدفوع' : monthStatus === 'partial' ? '◐ جزئي' : '✗ غير مسدد';
                 const statusClass = monthStatus === 'paid' ? 'status-paid' : monthStatus === 'partial' ? 'status-partial' : 'status-unpaid';
+                const daysSinceStart = getDaysSinceStart(customer.startDate);
                 return (
                 <div key={customer.id} className="invoice-card">
-                  <div><strong>{customer.name}</strong></div>
+                  <div><strong>{customer.name}</strong> <span className="days-badge">{daysSinceStart} يوم</span></div>
                   <div className="small">المتبقي: {remaining} ﷼</div>
                   <div className={`invoice-month-status ${statusClass}`}>
                     {MONTHS_AR[invoiceMonth - 1]}: {statusLabel}
@@ -1283,6 +1463,48 @@ function App() {
                 </div>
                 );
               })}
+            </div>
+
+            {/* جدول الفواتير المستحقة */}
+            <div className="due-invoices-section">
+              <h3>📋 الفواتير المستحقة (30 يوم فأكثر)</h3>
+              {dueInvoices.length === 0 ? (
+                <p className="no-data">لا توجد فواتير مستحقة حالياً</p>
+              ) : (
+                <table className="due-invoices-table">
+                  <thead>
+                    <tr>
+                      <th>اسم العميل</th>
+                      <th>المدينة</th>
+                      <th>عدد الأيام</th>
+                      <th>المستحق</th>
+                      <th>إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dueInvoices.map(customer => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      const daysSinceStart = getDaysSinceMonthStart(customer.startDate);
+                      return (
+                        <tr key={customer.id}>
+                          <td>{customer.name}</td>
+                          <td>{city?.name || '-'}</td>
+                          <td className="days-cell">{daysSinceStart} يوم</td>
+                          <td className="amount-cell">{customer.subscriptionValue || 0} ﷼</td>
+                          <td>
+                            <button 
+                              onClick={() => generateSubscriptionInvoicePDF(customer, invoiceMonth, invoiceYear)} 
+                              className="btn primary btn-sm"
+                            >
+                              استخراج الفاتورة
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         )}
@@ -1347,22 +1569,55 @@ function App() {
                             
                             return (
                               <td key={monthIdx} className="month-cell">
-                                <button
-                                  className={`status-btn ${status}`}
-                                  onClick={async () => {
-                                    const nextStatus = status === 'pending' ? 'partial' : status === 'partial' ? 'paid' : 'pending';
-                                    const updatedPayments = {
-                                      ...(customer.monthlyPayments || {}),
-                                      [yearMonth]: nextStatus
-                                    };
-                                    await setDoc(doc(db, 'customers', customer.id), {
-                                      ...customer,
-                                      monthlyPayments: updatedPayments
-                                    });
-                                  }}
-                                >
-                                  {statusLabels[status]}
-                                </button>
+                                <div className="month-cell-content">
+                                  <button
+                                    className={`status-btn ${status}`}
+                                    onClick={() => {
+                                      const nextStatus = status === 'pending' ? 'partial' : status === 'partial' ? 'paid' : 'pending';
+                                      // إذا كانت الحالة الجديدة جزئي، نفتح نافذة إدخال المبلغ
+                                      if (nextStatus === 'partial') {
+                                        setConfirmStatusChange({ 
+                                          customer, 
+                                          newStatus: 'partial',
+                                          yearMonth
+                                        });
+                                        setPartialPaymentAmount('');
+                                      } else {
+                                        // تحديث مباشر للحالات الأخرى مع مزامنة paymentStatus
+                                        const today = new Date();
+                                        const currentYearMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+                                        const isCurrentMonth = yearMonth === currentYearMonth;
+                                        
+                                        const updatedPayments = {
+                                          ...(customer.monthlyPayments || {}),
+                                          [yearMonth]: nextStatus
+                                        };
+                                        
+                                        const updatedCustomer: Customer = {
+                                          ...customer,
+                                          monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending'>,
+                                        };
+                                        
+                                        // مزامنة paymentStatus إذا كان الشهر الحالي
+                                        if (isCurrentMonth) {
+                                          updatedCustomer.paymentStatus = nextStatus === 'pending' ? 'unpaid' : nextStatus;
+                                        }
+                                        
+                                        setDoc(doc(db, 'customers', customer.id), updatedCustomer);
+                                        setCustomers(customers.map(c => c.id === customer.id ? updatedCustomer : c));
+                                      }
+                                    }}
+                                  >
+                                    {statusLabels[status]}
+                                  </button>
+                                  <button
+                                    className="invoice-mini-btn"
+                                    onClick={() => generateSubscriptionInvoicePDF(customer, monthIdx + 1, selectedYear)}
+                                    title="استخراج فاتورة"
+                                  >
+                                    📄
+                                  </button>
+                                </div>
                               </td>
                             );
                           })}
@@ -1831,6 +2086,61 @@ function App() {
                 </tbody>
               </table>
             </div>
+
+            {/* قسم المصروفات وصافي الإيراد */}
+            <div className="net-revenue-section">
+              <h3>💰 ملخص الشهر: {MONTHS_AR[revenuesMonth - 1]} {revenuesYear}</h3>
+              
+              {(() => {
+                const monthExpenses = expenses.filter(e => e.month === revenuesMonth && e.year === revenuesYear);
+                const totalExpenses = monthExpenses.reduce((sum, e) => sum + e.amount, 0);
+                const totalIncome = revenuesData.paidAmount + revenuesData.partialAmount;
+                const netRevenue = totalIncome - totalExpenses;
+                
+                return (
+                  <>
+                    <div className="net-summary-cards">
+                      <div className="net-card income">
+                        <div className="net-label">إجمالي الإيرادات</div>
+                        <div className="net-amount">{totalIncome.toFixed(0)} ﷼</div>
+                      </div>
+                      <div className="net-card expenses">
+                        <div className="net-label">إجمالي المصروفات</div>
+                        <div className="net-amount">{totalExpenses.toFixed(0)} ﷼</div>
+                      </div>
+                      <div className={`net-card net ${netRevenue >= 0 ? 'positive' : 'negative'}`}>
+                        <div className="net-label">صافي الإيراد</div>
+                        <div className="net-amount">{netRevenue.toFixed(0)} ﷼</div>
+                      </div>
+                    </div>
+
+                    {monthExpenses.length > 0 && (
+                      <div className="month-expenses-list">
+                        <h4>📋 مصروفات الشهر</h4>
+                        <table className="expenses-mini-table">
+                          <thead>
+                            <tr>
+                              <th>المصروف</th>
+                              <th>الوصف</th>
+                              <th>القيمة</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {monthExpenses.map(expense => (
+                              <tr key={expense.id}>
+                                <td>{expense.name}</td>
+                                <td>{expense.description || '-'}</td>
+                                <td className="expense-amount">{expense.amount} ﷼</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
           </div>
         )}
 
@@ -1973,6 +2283,172 @@ function App() {
                               className="btn danger btn-sm"
                             >
                               إزالة الخصم
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'expenses' && (
+          <div className="section expenses-section">
+            <h2>💰 المصروفات</h2>
+            
+            <div className="expense-form">
+              <h3>إضافة مصروف جديد</h3>
+              <div className="expense-form-grid">
+                <div className="expense-field">
+                  <label>اسم المصروف *</label>
+                  <input 
+                    type="text" 
+                    value={expenseName}
+                    onChange={(e) => setExpenseName(e.target.value)}
+                    placeholder="مثال: فاتورة كهرباء"
+                    className="input"
+                  />
+                </div>
+                <div className="expense-field">
+                  <label>الوصف / البيانات</label>
+                  <input 
+                    type="text" 
+                    value={expenseDescription}
+                    onChange={(e) => setExpenseDescription(e.target.value)}
+                    placeholder="تفاصيل إضافية..."
+                    className="input"
+                  />
+                </div>
+                <div className="expense-field">
+                  <label>القيمة (﷼) *</label>
+                  <input 
+                    type="number" 
+                    value={expenseAmount}
+                    onChange={(e) => setExpenseAmount(e.target.value)}
+                    placeholder="0"
+                    className="input"
+                  />
+                </div>
+                <div className="expense-field">
+                  <label>التاريخ</label>
+                  <input 
+                    type="date" 
+                    value={expenseDate}
+                    onChange={(e) => setExpenseDate(e.target.value)}
+                    className="input"
+                  />
+                </div>
+              </div>
+              <button onClick={addExpense} className="btn primary">إضافة المصروف</button>
+            </div>
+
+            <div className="expenses-list">
+              <h3>📋 قائمة المصروفات</h3>
+              {expenses.length === 0 ? (
+                <p className="no-expenses">لا توجد مصروفات مسجلة</p>
+              ) : (
+                <table className="expenses-table">
+                  <thead>
+                    <tr>
+                      <th>اسم المصروف</th>
+                      <th>الوصف</th>
+                      <th>القيمة</th>
+                      <th>التاريخ</th>
+                      <th>إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenses
+                      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                      .map(expense => (
+                        <tr key={expense.id}>
+                          <td>{expense.name}</td>
+                          <td>{expense.description || '-'}</td>
+                          <td className="expense-amount">{expense.amount} ﷼</td>
+                          <td>{formatDate(expense.date)}</td>
+                          <td>
+                            <button 
+                              onClick={() => deleteExpense(expense)} 
+                              className="btn danger btn-sm"
+                            >
+                              حذف
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'suspended' && (
+          <div className="section suspended-section">
+            <h2>⏸️ إيقاف مؤقت للعملاء</h2>
+            <p className="suspended-info">العملاء الموقوفين لا يتم حساب فواتيرهم في الإيرادات</p>
+            
+            <div className="suspended-grid">
+              {/* إيقاف عميل جديد */}
+              <div className="suspended-card">
+                <h3>إيقاف عميل</h3>
+                <select 
+                  className="input"
+                  onChange={(e) => {
+                    const customer = customers.find(c => c.id === e.target.value);
+                    if (customer && !customer.isSuspended) {
+                      toggleSuspend(customer);
+                    }
+                    e.target.value = '';
+                  }}
+                >
+                  <option value="">اختر عميل لإيقافه...</option>
+                  {customers.filter(c => !c.isSuspended).map(customer => {
+                    const city = cities.find(c => c.id === customer.cityId);
+                    return (
+                      <option key={customer.id} value={customer.id}>
+                        {customer.name} - {city?.name || ''}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            </div>
+
+            {/* قائمة العملاء الموقوفين */}
+            <div className="suspended-list">
+              <h3>📋 العملاء الموقوفين ({customers.filter(c => c.isSuspended).length})</h3>
+              {customers.filter(c => c.isSuspended).length === 0 ? (
+                <p className="no-suspended">لا يوجد عملاء موقوفين حالياً</p>
+              ) : (
+                <table className="suspended-table">
+                  <thead>
+                    <tr>
+                      <th>اسم العميل</th>
+                      <th>المدينة</th>
+                      <th>قيمة الاشتراك</th>
+                      <th>تاريخ الإيقاف</th>
+                      <th>إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customers.filter(c => c.isSuspended).map(customer => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      return (
+                        <tr key={customer.id}>
+                          <td>⏸️ {customer.name}</td>
+                          <td>{city?.name || '-'}</td>
+                          <td>{customer.subscriptionValue || 0} ﷼</td>
+                          <td>{customer.suspendedDate ? formatDate(customer.suspendedDate) : '-'}</td>
+                          <td>
+                            <button 
+                              onClick={() => toggleSuspend(customer)} 
+                              className="btn success btn-sm"
+                            >
+                              إعادة التفعيل
                             </button>
                           </td>
                         </tr>

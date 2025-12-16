@@ -433,6 +433,284 @@ body {
   margin-left: 5px;
 }
 
+.suspended-badge {
+  margin-left: 5px;
+  color: #dc2626;
+  font-size: 14px;
+}
+
+.customer-card.suspended {
+  border-right: 4px solid #dc2626;
+  background: linear-gradient(135deg, #fef2f2, #fff);
+}
+
+.customer-card.suspended .customer-header strong {
+  color: #b91c1c;
+}
+
+/* ===== SUSPENDED SECTION ===== */
+.suspended-section {
+  padding: 20px;
+}
+
+.suspended-section h2 {
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+.suspended-info {
+  color: var(--text-light);
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+.suspended-grid {
+  display: grid;
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.suspended-card {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+}
+
+.suspended-card h3 {
+  margin-bottom: 15px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.suspended-list {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+}
+
+.suspended-list h3 {
+  margin-bottom: 15px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.no-suspended {
+  text-align: center;
+  color: var(--text-light);
+  padding: 30px;
+}
+
+.suspended-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.suspended-table thead {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+.suspended-table th {
+  padding: 12px;
+  text-align: right;
+  font-weight: 600;
+  color: white;
+  font-size: 14px;
+}
+
+.suspended-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.suspended-table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+/* ===== EXPENSES SECTION ===== */
+.expenses-section {
+  padding: 20px;
+}
+
+.expenses-section h2 {
+  margin-bottom: 20px;
+  color: var(--text);
+}
+
+.expense-form {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 30px;
+}
+
+.expense-form h3 {
+  margin-bottom: 20px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.expense-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.expense-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.expense-field label {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.expenses-list {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+}
+
+.expenses-list h3 {
+  margin-bottom: 15px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.no-expenses {
+  text-align: center;
+  color: var(--text-light);
+  padding: 30px;
+}
+
+.expenses-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.expenses-table thead {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+.expenses-table th {
+  padding: 12px;
+  text-align: right;
+  font-weight: 600;
+  color: white;
+  font-size: 14px;
+}
+
+.expenses-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.expenses-table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.expense-amount {
+  font-weight: 700;
+  color: #ef4444;
+}
+
+/* Net Revenue Section */
+.net-revenue-section {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+  margin-top: 30px;
+}
+
+.net-revenue-section h3 {
+  margin-bottom: 20px;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.net-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.net-card {
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+}
+
+.net-card.income {
+  background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+  border: 2px solid #22c55e;
+}
+
+.net-card.expenses {
+  background: linear-gradient(135deg, #fee2e2, #fecaca);
+  border: 2px solid #ef4444;
+}
+
+.net-card.net.positive {
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  border: 2px solid #3b82f6;
+}
+
+.net-card.net.negative {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  border: 2px solid #f59e0b;
+}
+
+.net-label {
+  font-size: 14px;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.net-amount {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.month-expenses-list {
+  margin-top: 20px;
+}
+
+.month-expenses-list h4 {
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.expenses-mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.expenses-mini-table th {
+  background: #f3f4f6;
+  padding: 10px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.expenses-mini-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -894,6 +1172,79 @@ body {
 .invoice-month-status.status-unpaid {
   background: #fee2e2;
   color: #dc2626;
+}
+
+/* شارة عدد الأيام */
+.days-badge {
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+/* جدول الفواتير المستحقة */
+.due-invoices-section {
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 2px solid var(--border);
+}
+
+.due-invoices-section h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+.due-invoices-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+
+.due-invoices-table thead {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+}
+
+.due-invoices-table th {
+  padding: 14px 16px;
+  text-align: right;
+  font-weight: 600;
+  color: white;
+  font-size: 14px;
+}
+
+.due-invoices-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.due-invoices-table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.due-invoices-table .days-cell {
+  font-weight: 700;
+  color: #dc2626;
+}
+
+.due-invoices-table .amount-cell {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.no-data {
+  text-align: center;
+  color: var(--text-light);
+  padding: 20px;
+  font-size: 14px;
 }
 
 .actions {
@@ -1609,6 +1960,30 @@ body {
 .status-btn.pending:hover {
   transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(148, 163, 184, 0.4);
+}
+
+.month-cell-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.invoice-mini-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.6;
+  transition: all 0.2s;
+}
+
+.invoice-mini-btn:hover {
+  opacity: 1;
+  background: var(--bg-secondary);
+  transform: scale(1.1);
 }
 
 .total-col {
