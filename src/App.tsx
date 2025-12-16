@@ -47,6 +47,16 @@ type Expense = {
   year: number;
 };
 
+type Income = {
+  id: string;
+  name: string;
+  description?: string;
+  amount: number;
+  date: string;
+  month: number;
+  year: number;
+};
+
 const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -83,6 +93,7 @@ function App() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
+  const [invoiceSearch, setInvoiceSearch] = useState('');
   const [invoiceMonth, setInvoiceMonth] = useState(new Date().getMonth() + 1);
   const [invoiceYear, setInvoiceYear] = useState(new Date().getFullYear());
   const [revenuesCityId, setRevenuesCityId] = useState<string | null>(null);
@@ -110,15 +121,30 @@ function App() {
   const [discountType, setDiscountType] = useState<'amount' | 'percentage'>('amount');
   const [discountValue, setDiscountValue] = useState('');
   const [discountSearch, setDiscountSearch] = useState('');
+  const [discountMonth, setDiscountMonth] = useState(new Date().getMonth() + 1);
+  const [discountYear, setDiscountYear] = useState(new Date().getFullYear());
   const [transferPassword, setTransferPassword] = useState('');
   const [transferLoading, setTransferLoading] = useState(false);
   
   // المصروفات
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [expenseName, setExpenseName] = useState('');
+  const [showPendingRevenues, setShowPendingRevenues] = useState(false);
+  const [showPaidRevenues, setShowPaidRevenues] = useState(false);
+  const [showPartialRevenues, setShowPartialRevenues] = useState(false);
   const [expenseDescription, setExpenseDescription] = useState('');
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseDate, setExpenseDate] = useState(todayISO());
+  
+  // الإيرادات اليدوية
+  const [incomes, setIncomes] = useState<Income[]>([]);
+  const [incomeName, setIncomeName] = useState('');
+  const [incomeDescription, setIncomeDescription] = useState('');
+  const [incomeAmount, setIncomeAmount] = useState('');
+  const [incomeDate, setIncomeDate] = useState(todayISO());
+  const [financeMonth, setFinanceMonth] = useState(new Date().getMonth() + 1);
+  const [financeYear, setFinanceYear] = useState(new Date().getFullYear());
+  const [suspendSearch, setSuspendSearch] = useState('');
 
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
@@ -134,11 +160,23 @@ function App() {
   );
 
   const invoiceFilteredCustomers = useMemo(
-    () =>
-      invoiceCityId
+    () => {
+      let filtered = invoiceCityId
         ? customers.filter((c) => c.cityId === invoiceCityId)
-        : [],
-    [customers, invoiceCityId]
+        : [];
+      
+      if (invoiceSearch.trim()) {
+        const query = invoiceSearch.trim().toLowerCase();
+        filtered = filtered.filter((c) => 
+          c.name.toLowerCase().includes(query) || 
+          (c.phone && c.phone.includes(query)) ||
+          (c.userName && c.userName.toLowerCase().includes(query))
+        );
+      }
+      
+      return filtered;
+    },
+    [customers, invoiceCityId, invoiceSearch]
   );
 
   const revenuesData = useMemo(() => {
@@ -185,7 +223,8 @@ function App() {
     const query = searchQuery.trim().toLowerCase();
     return customers.filter((c) => 
       c.name.toLowerCase().includes(query) || 
-      (c.phone && c.phone.includes(query))
+      (c.phone && c.phone.includes(query)) ||
+      (c.userName && c.userName.toLowerCase().includes(query))
     );
   }, [customers, searchQuery]);
 
@@ -392,25 +431,29 @@ function App() {
 
     try {
       const date = new Date(expenseDate);
-      const expense: Expense = {
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      
+      const expenseData: Record<string, unknown> = {
+        id,
         name: expenseName.trim(),
-        description: expenseDescription.trim() || undefined,
         amount: parseFloat(expenseAmount),
         date: expenseDate,
         month: date.getMonth() + 1,
         year: date.getFullYear(),
       };
+      
+      if (expenseDescription.trim()) {
+        expenseData.description = expenseDescription.trim();
+      }
 
-      await setDoc(doc(db, 'expenses', expense.id), expense);
-      setExpenses([...expenses, expense]);
+      await setDoc(doc(db, 'expenses', id), expenseData);
       
       setExpenseName('');
       setExpenseDescription('');
       setExpenseAmount('');
       setExpenseDate(todayISO());
       
-      setToastMessage(`تم إضافة المصروف: ${expense.name}`);
+      setToastMessage(`تم إضافة المصروف: ${expenseName.trim()}`);
     } catch (error) {
       setToastMessage('خطأ في إضافة المصروف');
       console.error(error);
@@ -425,6 +468,59 @@ function App() {
       setToastMessage(`تم حذف المصروف: ${expense.name}`);
     } catch (error) {
       setToastMessage('خطأ في حذف المصروف');
+      console.error(error);
+    }
+  };
+
+  // دوال الإيرادات اليدوية
+  const addIncome = async () => {
+    if (!incomeName.trim()) {
+      setToastMessage('أدخل اسم الإيراد');
+      return;
+    }
+    if (!incomeAmount || parseFloat(incomeAmount) <= 0) {
+      setToastMessage('أدخل قيمة الإيراد');
+      return;
+    }
+
+    try {
+      const date = new Date(incomeDate);
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      
+      const incomeData: Record<string, unknown> = {
+        id,
+        name: incomeName.trim(),
+        amount: parseFloat(incomeAmount),
+        date: incomeDate,
+        month: date.getMonth() + 1,
+        year: date.getFullYear(),
+      };
+      
+      if (incomeDescription.trim()) {
+        incomeData.description = incomeDescription.trim();
+      }
+
+      await setDoc(doc(db, 'incomes', id), incomeData);
+      
+      setIncomeName('');
+      setIncomeDescription('');
+      setIncomeAmount('');
+      setIncomeDate(todayISO());
+      
+      setToastMessage(`تم إضافة الإيراد: ${incomeName.trim()}`);
+    } catch (error) {
+      setToastMessage('خطأ في إضافة الإيراد');
+      console.error(error);
+    }
+  };
+
+  const deleteIncome = async (income: Income) => {
+    try {
+      await deleteDoc(doc(db, 'incomes', income.id));
+      setIncomes(incomes.filter(i => i.id !== income.id));
+      setToastMessage(`تم حذف الإيراد: ${income.name}`);
+    } catch (error) {
+      setToastMessage('خطأ في حذف الإيراد');
       console.error(error);
     }
   };
@@ -463,10 +559,17 @@ function App() {
       setExpenses(expensesData);
     });
 
+    // Listen to incomes collection
+    const unsubscribeIncomes = onSnapshot(collection(db, 'incomes'), (snapshot) => {
+      const incomesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Income));
+      setIncomes(incomesData);
+    });
+
     return () => {
       unsubscribeCities();
       unsubscribeCustomers();
       unsubscribeExpenses();
+      unsubscribeIncomes();
     };
   }, [isAuthenticated]);
 
@@ -1124,7 +1227,7 @@ function App() {
         
         <div class="status-box ${isPaid ? 'status-paid' : isPartial ? 'status-partial' : 'status-unpaid'}">
           <div class="status-label">حالة السداد</div>
-          <div class="status-value">${isPaid ? '✓ مدفوع' : isPartial ? `◐ جزئي (${customer.subscriptionPaid || 0} ﷼)` : '✗ غير مسدد'}</div>
+          <div class="status-value">${isPaid ? '✓ مدفوع' : isPartial ? `◐ جزئي (${customer.subscriptionPaid || 0} ﷼) - المتبقي: ${(customer.subscriptionValue || 0) - (customer.subscriptionPaid || 0)} ﷼` : '✗ غير مسدد'}</div>
         </div>
         
         ${customer.notes ? `
@@ -1250,6 +1353,7 @@ function App() {
                   <div key={customer.id} className="search-result-item" onClick={() => navigateToCustomer(customer)}>
                     <div className="result-name">{customer.name}</div>
                     <div className="result-details">
+                      {customer.userName && <span className="result-username">{customer.userName}</span>}
                       {customer.phone && <span>{customer.phone}</span>}
                       {city && <span className="result-city">{city.name}</span>}
                     </div>
@@ -1399,7 +1503,7 @@ function App() {
                           <button onClick={() => openTransferCustomer(customer)} className="btn primary btn-sm">نقل</button>
                         </div>
                       </div>
-                      <div className="small">{customer.phone || '-'} • {customer.ipNumber || '-'}</div>
+                      <div className="small">{customer.userName || '-'} • {customer.phone || '-'} • {customer.ipNumber || '-'}</div>
                       <div className="small">المتبقي: {remaining} ﷼</div>
                       <div className="actions">
                         <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">تأسيس</button>
@@ -1423,6 +1527,14 @@ function App() {
                 <option value="">اختر مدينة</option>
                 {cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}
               </select>
+              
+              <input
+                type="text"
+                className="input invoice-search"
+                placeholder="ابحث بالاسم أو الجوال أو اسم المستخدم..."
+                value={invoiceSearch}
+                onChange={(e) => setInvoiceSearch(e.target.value)}
+              />
               
               <div className="invoice-date-selector">
                 <label>شهر الفاتورة:</label>
@@ -1995,151 +2107,123 @@ function App() {
               </div>
             </div>
 
-            <div className="revenues-list">
-              <div className="revenues-section-title">المستحصلة</div>
-              <table className="revenues-table">
-                <thead>
-                  <tr>
-                    <th>اسم العميل</th>
-                    <th>المدينة</th>
-                    <th>رقم الهاتف</th>
-                    <th>المبلغ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revenuesData.paid.map(customer => {
-                    const city = cities.find(c => c.id === customer.cityId);
-                    return (
-                      <tr key={customer.id}>
-                        <td>{customer.name}</td>
-                        <td>{city?.name || '-'}</td>
-                        <td>{customer.phone || '-'}</td>
-                        <td>{customer.subscriptionValue} ﷼</td>
-                      </tr>
-                    );
-                  })}
-                  {revenuesData.paid.length === 0 && (
-                    <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات مستحصلة</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="revenues-list">
-              <div className="revenues-section-title">الإيرادات الجزئية</div>
-              <table className="revenues-table">
-                <thead>
-                  <tr>
-                    <th>اسم العميل</th>
-                    <th>المدينة</th>
-                    <th>رقم الهاتف</th>
-                    <th>قيمة الاشتراك</th>
-                    <th>المستحصل</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revenuesData.partial.map(customer => {
-                    const city = cities.find(c => c.id === customer.cityId);
-                    return (
-                      <tr key={customer.id}>
-                        <td>{customer.name}</td>
-                        <td>{city?.name || '-'}</td>
-                        <td>{customer.phone || '-'}</td>
-                        <td>{customer.subscriptionValue} ﷼</td>
-                        <td>{(customer.subscriptionPaid || 0).toFixed(0)} ﷼</td>
-                      </tr>
-                    );
-                  })}
-                  {revenuesData.partial.length === 0 && (
-                    <tr><td colSpan={5} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات جزئية</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="revenues-list">
-              <div className="revenues-section-title">الإيرادات المتأخرة</div>
-              <table className="revenues-table">
-                <thead>
-                  <tr>
-                    <th>اسم العميل</th>
-                    <th>المدينة</th>
-                    <th>رقم الهاتف</th>
-                    <th>المبلغ المتأخر</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revenuesData.pending.map(customer => {
-                    const city = cities.find(c => c.id === customer.cityId);
-                    return (
-                      <tr key={customer.id}>
-                        <td>{customer.name}</td>
-                        <td>{city?.name || '-'}</td>
-                        <td>{customer.phone || '-'}</td>
-                        <td>{customer.subscriptionValue} ﷼</td>
-                      </tr>
-                    );
-                  })}
-                  {revenuesData.pending.length === 0 && (
-                    <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات متأخرة</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* قسم المصروفات وصافي الإيراد */}
-            <div className="net-revenue-section">
-              <h3>💰 ملخص الشهر: {MONTHS_AR[revenuesMonth - 1]} {revenuesYear}</h3>
-              
-              {(() => {
-                const monthExpenses = expenses.filter(e => e.month === revenuesMonth && e.year === revenuesYear);
-                const totalExpenses = monthExpenses.reduce((sum, e) => sum + e.amount, 0);
-                const totalIncome = revenuesData.paidAmount + revenuesData.partialAmount;
-                const netRevenue = totalIncome - totalExpenses;
-                
-                return (
-                  <>
-                    <div className="net-summary-cards">
-                      <div className="net-card income">
-                        <div className="net-label">إجمالي الإيرادات</div>
-                        <div className="net-amount">{totalIncome.toFixed(0)} ﷼</div>
-                      </div>
-                      <div className="net-card expenses">
-                        <div className="net-label">إجمالي المصروفات</div>
-                        <div className="net-amount">{totalExpenses.toFixed(0)} ﷼</div>
-                      </div>
-                      <div className={`net-card net ${netRevenue >= 0 ? 'positive' : 'negative'}`}>
-                        <div className="net-label">صافي الإيراد</div>
-                        <div className="net-amount">{netRevenue.toFixed(0)} ﷼</div>
-                      </div>
-                    </div>
-
-                    {monthExpenses.length > 0 && (
-                      <div className="month-expenses-list">
-                        <h4>📋 مصروفات الشهر</h4>
-                        <table className="expenses-mini-table">
-                          <thead>
-                            <tr>
-                              <th>المصروف</th>
-                              <th>الوصف</th>
-                              <th>القيمة</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {monthExpenses.map(expense => (
-                              <tr key={expense.id}>
-                                <td>{expense.name}</td>
-                                <td>{expense.description || '-'}</td>
-                                <td className="expense-amount">{expense.amount} ﷼</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+            <div className="revenues-list collapsible">
+              <div 
+                className="revenues-section-title clickable" 
+                onClick={() => setShowPaidRevenues(!showPaidRevenues)}
+                style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px'}}
+              >
+                <span style={{transition: 'transform 0.3s', transform: showPaidRevenues ? 'rotate(90deg)' : 'rotate(0deg)'}}>▶</span>
+                المستحصلة ({revenuesData.paid.length})
+              </div>
+              {showPaidRevenues && (
+                <table className="revenues-table">
+                  <thead>
+                    <tr>
+                      <th>اسم العميل</th>
+                      <th>المدينة</th>
+                      <th>رقم الهاتف</th>
+                      <th>المبلغ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {revenuesData.paid.map(customer => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      return (
+                        <tr key={customer.id}>
+                          <td>{customer.name}</td>
+                          <td>{city?.name || '-'}</td>
+                          <td>{customer.phone || '-'}</td>
+                          <td>{customer.subscriptionValue} ﷼</td>
+                        </tr>
+                      );
+                    })}
+                    {revenuesData.paid.length === 0 && (
+                      <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات مستحصلة</td></tr>
                     )}
-                  </>
-                );
-              })()}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="revenues-list collapsible">
+              <div 
+                className="revenues-section-title clickable" 
+                onClick={() => setShowPartialRevenues(!showPartialRevenues)}
+                style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px'}}
+              >
+                <span style={{transition: 'transform 0.3s', transform: showPartialRevenues ? 'rotate(90deg)' : 'rotate(0deg)'}}>▶</span>
+                الإيرادات الجزئية ({revenuesData.partial.length})
+              </div>
+              {showPartialRevenues && (
+                <table className="revenues-table">
+                  <thead>
+                    <tr>
+                      <th>اسم العميل</th>
+                      <th>المدينة</th>
+                      <th>رقم الهاتف</th>
+                      <th>قيمة الاشتراك</th>
+                      <th>المستحصل</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {revenuesData.partial.map(customer => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      return (
+                        <tr key={customer.id}>
+                          <td>{customer.name}</td>
+                          <td>{city?.name || '-'}</td>
+                          <td>{customer.phone || '-'}</td>
+                          <td>{customer.subscriptionValue} ﷼</td>
+                          <td>{(customer.subscriptionPaid || 0).toFixed(0)} ﷼</td>
+                        </tr>
+                      );
+                    })}
+                    {revenuesData.partial.length === 0 && (
+                      <tr><td colSpan={5} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات جزئية</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="revenues-list collapsible">
+              <div 
+                className="revenues-section-title clickable" 
+                onClick={() => setShowPendingRevenues(!showPendingRevenues)}
+                style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px'}}
+              >
+                <span style={{transition: 'transform 0.3s', transform: showPendingRevenues ? 'rotate(90deg)' : 'rotate(0deg)'}}>▶</span>
+                الإيرادات المتأخرة ({revenuesData.pending.length})
+              </div>
+              {showPendingRevenues && (
+                <table className="revenues-table">
+                  <thead>
+                    <tr>
+                      <th>اسم العميل</th>
+                      <th>المدينة</th>
+                      <th>رقم الهاتف</th>
+                      <th>المبلغ المتأخر</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {revenuesData.pending.map(customer => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      return (
+                        <tr key={customer.id}>
+                          <td>{customer.name}</td>
+                          <td>{city?.name || '-'}</td>
+                          <td>{customer.phone || '-'}</td>
+                          <td>{customer.subscriptionValue} ﷼</td>
+                        </tr>
+                      );
+                    })}
+                    {revenuesData.pending.length === 0 && (
+                      <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات متأخرة</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         )}
@@ -2147,6 +2231,21 @@ function App() {
         {activeTab === 'discounts' && (
           <div className="section discounts-section">
             <h2>تطبيق الخصومات</h2>
+            
+            {/* اختيار الشهر والسنة */}
+            <div className="discount-filters">
+              <div className="month-year-selector">
+                <button className="btn-month" onClick={() => setDiscountMonth(m => m === 1 ? 12 : m - 1)}>◀</button>
+                <span className="month-display">{MONTHS_AR[discountMonth - 1]}</span>
+                <button className="btn-month" onClick={() => setDiscountMonth(m => m === 12 ? 1 : m + 1)}>▶</button>
+              </div>
+              <div className="year-selector">
+                <button className="btn-month" onClick={() => setDiscountYear(y => y - 1)}>◀</button>
+                <span className="year-display">{discountYear}</span>
+                <button className="btn-month" onClick={() => setDiscountYear(y => y + 1)}>▶</button>
+              </div>
+            </div>
+            
             <div className="discount-form">
               <div className="discount-row">
                 <div className="discount-field">
@@ -2297,91 +2396,231 @@ function App() {
 
         {activeTab === 'expenses' && (
           <div className="section expenses-section">
-            <h2>💰 المصروفات</h2>
+            <h2>💰 الحسابات المالية</h2>
             
-            <div className="expense-form">
-              <h3>إضافة مصروف جديد</h3>
-              <div className="expense-form-grid">
-                <div className="expense-field">
-                  <label>اسم المصروف *</label>
-                  <input 
-                    type="text" 
-                    value={expenseName}
-                    onChange={(e) => setExpenseName(e.target.value)}
-                    placeholder="مثال: فاتورة كهرباء"
-                    className="input"
-                  />
-                </div>
-                <div className="expense-field">
-                  <label>الوصف / البيانات</label>
-                  <input 
-                    type="text" 
-                    value={expenseDescription}
-                    onChange={(e) => setExpenseDescription(e.target.value)}
-                    placeholder="تفاصيل إضافية..."
-                    className="input"
-                  />
-                </div>
-                <div className="expense-field">
-                  <label>القيمة (﷼) *</label>
-                  <input 
-                    type="number" 
-                    value={expenseAmount}
-                    onChange={(e) => setExpenseAmount(e.target.value)}
-                    placeholder="0"
-                    className="input"
-                  />
-                </div>
-                <div className="expense-field">
-                  <label>التاريخ</label>
-                  <input 
-                    type="date" 
-                    value={expenseDate}
-                    onChange={(e) => setExpenseDate(e.target.value)}
-                    className="input"
-                  />
-                </div>
+            {/* اختيار الشهر والسنة */}
+            <div className="finance-filters">
+              <div className="month-year-selector">
+                <button className="btn-month" onClick={() => setFinanceMonth(m => m === 1 ? 12 : m - 1)}>◀</button>
+                <span className="month-display">{MONTHS_AR[financeMonth - 1]}</span>
+                <button className="btn-month" onClick={() => setFinanceMonth(m => m === 12 ? 1 : m + 1)}>▶</button>
               </div>
-              <button onClick={addExpense} className="btn primary">إضافة المصروف</button>
+              <div className="year-selector">
+                <button className="btn-month" onClick={() => setFinanceYear(y => y - 1)}>◀</button>
+                <span className="year-display">{financeYear}</span>
+                <button className="btn-month" onClick={() => setFinanceYear(y => y + 1)}>▶</button>
+              </div>
             </div>
 
-            <div className="expenses-list">
-              <h3>📋 قائمة المصروفات</h3>
-              {expenses.length === 0 ? (
-                <p className="no-expenses">لا توجد مصروفات مسجلة</p>
-              ) : (
-                <table className="expenses-table">
-                  <thead>
-                    <tr>
-                      <th>اسم المصروف</th>
-                      <th>الوصف</th>
-                      <th>القيمة</th>
-                      <th>التاريخ</th>
-                      <th>إجراء</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {expenses
-                      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                      .map(expense => (
-                        <tr key={expense.id}>
-                          <td>{expense.name}</td>
-                          <td>{expense.description || '-'}</td>
-                          <td className="expense-amount">{expense.amount} ﷼</td>
-                          <td>{formatDate(expense.date)}</td>
-                          <td>
-                            <button 
-                              onClick={() => deleteExpense(expense)} 
-                              className="btn danger btn-sm"
-                            >
-                              حذف
-                            </button>
-                          </td>
+            {/* ملخص الشهر */}
+            {(() => {
+              const monthExpenses = expenses.filter(e => e.month === financeMonth && e.year === financeYear);
+              const monthIncomes = incomes.filter(i => i.month === financeMonth && i.year === financeYear);
+              const totalExpenses = monthExpenses.reduce((sum, e) => sum + e.amount, 0);
+              const totalIncomes = monthIncomes.reduce((sum, i) => sum + i.amount, 0);
+              const netRevenue = totalIncomes - totalExpenses;
+              
+              return (
+                <div className="net-revenue-section">
+                  <h3>📊 ملخص {MONTHS_AR[financeMonth - 1]} {financeYear}</h3>
+                  <div className="net-summary-cards">
+                    <div className="net-card income">
+                      <div className="net-label">إجمالي الإيرادات</div>
+                      <div className="net-amount">{totalIncomes.toFixed(0)} ﷼</div>
+                    </div>
+                    <div className="net-card expenses">
+                      <div className="net-label">إجمالي المصروفات</div>
+                      <div className="net-amount">{totalExpenses.toFixed(0)} ﷼</div>
+                    </div>
+                    <div className={`net-card net ${netRevenue >= 0 ? 'positive' : 'negative'}`}>
+                      <div className="net-label">صافي الربح</div>
+                      <div className="net-amount">{netRevenue.toFixed(0)} ﷼</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+            
+            {/* نموذج إضافة مصروف وإيراد */}
+            <div className="finance-forms">
+              <div className="expense-form">
+                <h3>➖ إضافة مصروف</h3>
+                <div className="expense-form-grid">
+                  <div className="expense-field">
+                    <label>اسم المصروف *</label>
+                    <input 
+                      type="text" 
+                      value={expenseName}
+                      onChange={(e) => setExpenseName(e.target.value)}
+                      placeholder="مثال: فاتورة كهرباء"
+                      className="input"
+                    />
+                  </div>
+                  <div className="expense-field">
+                    <label>الوصف</label>
+                    <input 
+                      type="text" 
+                      value={expenseDescription}
+                      onChange={(e) => setExpenseDescription(e.target.value)}
+                      placeholder="تفاصيل إضافية..."
+                      className="input"
+                    />
+                  </div>
+                  <div className="expense-field">
+                    <label>القيمة (﷼) *</label>
+                    <input 
+                      type="number" 
+                      value={expenseAmount}
+                      onChange={(e) => setExpenseAmount(e.target.value)}
+                      placeholder="0"
+                      className="input"
+                    />
+                  </div>
+                  <div className="expense-field">
+                    <label>التاريخ</label>
+                    <input 
+                      type="date" 
+                      value={expenseDate}
+                      onChange={(e) => setExpenseDate(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                </div>
+                <button onClick={addExpense} className="btn danger">إضافة مصروف</button>
+              </div>
+
+              <div className="expense-form income-form">
+                <h3>➕ إضافة إيراد</h3>
+                <div className="expense-form-grid">
+                  <div className="expense-field">
+                    <label>اسم الإيراد *</label>
+                    <input 
+                      type="text" 
+                      value={incomeName}
+                      onChange={(e) => setIncomeName(e.target.value)}
+                      placeholder="مثال: بيع معدات"
+                      className="input"
+                    />
+                  </div>
+                  <div className="expense-field">
+                    <label>الوصف</label>
+                    <input 
+                      type="text" 
+                      value={incomeDescription}
+                      onChange={(e) => setIncomeDescription(e.target.value)}
+                      placeholder="تفاصيل إضافية..."
+                      className="input"
+                    />
+                  </div>
+                  <div className="expense-field">
+                    <label>القيمة (﷼) *</label>
+                    <input 
+                      type="number" 
+                      value={incomeAmount}
+                      onChange={(e) => setIncomeAmount(e.target.value)}
+                      placeholder="0"
+                      className="input"
+                    />
+                  </div>
+                  <div className="expense-field">
+                    <label>التاريخ</label>
+                    <input 
+                      type="date" 
+                      value={incomeDate}
+                      onChange={(e) => setIncomeDate(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                </div>
+                <button onClick={addIncome} className="btn primary">إضافة إيراد</button>
+              </div>
+            </div>
+
+            {/* جداول المصروفات والإيرادات */}
+            <div className="finance-tables">
+              <div className="expenses-list">
+                <h3>📋 مصروفات {MONTHS_AR[financeMonth - 1]}</h3>
+                {(() => {
+                  const monthExpenses = expenses.filter(e => e.month === financeMonth && e.year === financeYear);
+                  return monthExpenses.length === 0 ? (
+                    <p className="no-expenses">لا توجد مصروفات في هذا الشهر</p>
+                  ) : (
+                    <table className="expenses-table">
+                      <thead>
+                        <tr>
+                          <th>اسم المصروف</th>
+                          <th>الوصف</th>
+                          <th>القيمة</th>
+                          <th>التاريخ</th>
+                          <th>إجراء</th>
                         </tr>
-                      ))}
-                  </tbody>
-                </table>
-              )}
+                      </thead>
+                      <tbody>
+                        {monthExpenses
+                          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                          .map(expense => (
+                            <tr key={expense.id}>
+                              <td>{expense.name}</td>
+                              <td>{expense.description || '-'}</td>
+                              <td className="expense-amount">{expense.amount} ﷼</td>
+                              <td>{formatDate(expense.date)}</td>
+                              <td>
+                                <button 
+                                  onClick={() => deleteExpense(expense)} 
+                                  className="btn danger btn-sm"
+                                >
+                                  حذف
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+
+              <div className="expenses-list incomes-list">
+                <h3>📋 إيرادات {MONTHS_AR[financeMonth - 1]}</h3>
+                {(() => {
+                  const monthIncomes = incomes.filter(i => i.month === financeMonth && i.year === financeYear);
+                  return monthIncomes.length === 0 ? (
+                    <p className="no-expenses">لا توجد إيرادات في هذا الشهر</p>
+                  ) : (
+                    <table className="expenses-table incomes-table">
+                      <thead>
+                        <tr>
+                          <th>اسم الإيراد</th>
+                          <th>الوصف</th>
+                          <th>القيمة</th>
+                          <th>التاريخ</th>
+                          <th>إجراء</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthIncomes
+                          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                          .map(income => (
+                            <tr key={income.id}>
+                              <td>{income.name}</td>
+                              <td>{income.description || '-'}</td>
+                              <td className="income-amount">{income.amount} ﷼</td>
+                              <td>{formatDate(income.date)}</td>
+                              <td>
+                                <button 
+                                  onClick={() => deleteIncome(income)} 
+                                  className="btn danger btn-sm"
+                                >
+                                  حذف
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
             </div>
           </div>
         )}
@@ -2395,26 +2634,45 @@ function App() {
               {/* إيقاف عميل جديد */}
               <div className="suspended-card">
                 <h3>إيقاف عميل</h3>
-                <select 
+                <input
+                  type="text"
                   className="input"
-                  onChange={(e) => {
-                    const customer = customers.find(c => c.id === e.target.value);
-                    if (customer && !customer.isSuspended) {
-                      toggleSuspend(customer);
-                    }
-                    e.target.value = '';
-                  }}
-                >
-                  <option value="">اختر عميل لإيقافه...</option>
-                  {customers.filter(c => !c.isSuspended).map(customer => {
-                    const city = cities.find(c => c.id === customer.cityId);
-                    return (
-                      <option key={customer.id} value={customer.id}>
-                        {customer.name} - {city?.name || ''}
-                      </option>
-                    );
-                  })}
-                </select>
+                  placeholder="ابحث بالاسم أو رقم الجوال..."
+                  value={suspendSearch}
+                  onChange={(e) => setSuspendSearch(e.target.value)}
+                />
+                {suspendSearch.trim() && (() => {
+                  const searchResults = customers.filter(c => 
+                    !c.isSuspended && 
+                    (c.name.toLowerCase().includes(suspendSearch.toLowerCase()) || 
+                     (c.phone && c.phone.includes(suspendSearch)) ||
+                     (c.userName && c.userName.toLowerCase().includes(suspendSearch.toLowerCase())))
+                  );
+                  return searchResults.length > 0 ? (
+                    <div className="suspend-search-results">
+                      {searchResults.slice(0, 10).map(customer => {
+                        const city = cities.find(c => c.id === customer.cityId);
+                        return (
+                          <div 
+                            key={customer.id} 
+                            className="suspend-search-item"
+                            onClick={() => {
+                              toggleSuspend(customer);
+                              setSuspendSearch('');
+                            }}
+                          >
+                            <span className="suspend-customer-name">{customer.name}</span>
+                            <span className="suspend-customer-info">{city?.name} {customer.userName ? `- ${customer.userName}` : ''} {customer.phone ? `- ${customer.phone}` : ''}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="suspend-search-results">
+                      <div className="suspend-no-results">لا توجد نتائج</div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
