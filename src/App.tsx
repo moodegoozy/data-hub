@@ -33,11 +33,85 @@ type Customer = {
   monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
   hasDiscount?: boolean;
   discountAmount?: number;
+  partialPayments?: { [yearMonth: string]: number };
 };
 
 const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
+
+const getYearMonthKey = (year: number, month: number) => `${year}-${String(month).padStart(2, '0')}`;
+
+const buildMonthRange = (startDate: string | undefined, endYear: number, endMonth: number) => {
+  const end = new Date(endYear, endMonth - 1, 1);
+  let cursor = startDate ? new Date(startDate) : new Date(endYear, 0, 1);
+  cursor = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+
+  if (cursor > end) {
+    cursor = new Date(endYear, endMonth - 1, 1);
+  }
+
+  const months: string[] = [];
+  while (cursor <= end) {
+    months.push(getYearMonthKey(cursor.getFullYear(), cursor.getMonth() + 1));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  if (months.length === 0) {
+    months.push(getYearMonthKey(endYear, endMonth));
+  }
+
+  return months;
+};
+
+const buildReceivableSnapshot = (customer: Customer, year: number, month: number) => {
+  const monthlyValue = customer.subscriptionValue || 0;
+  const months = buildMonthRange(customer.startDate, year, month);
+  const payments: Record<string, 'paid' | 'partial' | 'pending'> = customer.monthlyPayments || {};
+  const partials: Record<string, number> = customer.partialPayments || {};
+
+  let totalPaid = 0;
+  let paidMonths = 0;
+  let partialMonths = 0;
+  let arrearsMonths = 0;
+
+  months.forEach((ym) => {
+    const status = payments[ym] || 'pending';
+    const paidAmount = status === 'paid'
+      ? monthlyValue
+      : status === 'partial'
+        ? partials[ym] ?? customer.subscriptionPaid ?? 0
+        : 0;
+
+    totalPaid += Math.min(paidAmount, monthlyValue);
+    if (status === 'paid') paidMonths++;
+    if (status === 'partial') partialMonths++;
+    if (status === 'pending' || paidAmount < monthlyValue) arrearsMonths++;
+  });
+
+  const totalDue = months.length * monthlyValue;
+  const outstanding = Math.max(0, totalDue - totalPaid);
+  const currentKey = getYearMonthKey(year, month);
+  const currentStatus = payments[currentKey] || 'pending';
+  const currentMonthPaid = currentStatus === 'paid'
+    ? monthlyValue
+    : currentStatus === 'partial'
+      ? partials[currentKey] ?? customer.subscriptionPaid ?? 0
+      : 0;
+
+  return {
+    totalDue,
+    totalPaid,
+    outstanding,
+    dueMonths: months.length,
+    paidMonths,
+    partialMonths,
+    arrearsMonths,
+    currentStatus,
+    currentMonthPaid,
+    targetKey: currentKey,
+  };
+};
 
 const formatDate = (value: string) => {
   const date = new Date(value);
@@ -123,38 +197,28 @@ function App() {
   );
 
   const revenuesData = useMemo(() => {
-    const yearMonth = `${revenuesYear}-${String(revenuesMonth).padStart(2, '0')}`;
     const today = new Date();
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth() + 1;
-    const isFutureMonth = revenuesYear > currentYear || 
+    const isFutureMonth = revenuesYear > currentYear ||
       (revenuesYear === currentYear && revenuesMonth > currentMonth);
 
     const cityCustomers = revenuesCityId
       ? customers.filter((c) => c.cityId === revenuesCityId && c.subscriptionValue)
       : customers.filter((c) => c.subscriptionValue);
 
-    const paid = cityCustomers.filter((c) => {
-      if (isFutureMonth) return false;
-      const monthStatus = c.monthlyPayments?.[yearMonth];
-      return monthStatus === 'paid';
-    });
+    const withSnapshots = cityCustomers.map((customer) => ({
+      customer,
+      snapshot: buildReceivableSnapshot(customer, revenuesYear, revenuesMonth),
+    }));
 
-    const partial = cityCustomers.filter((c) => {
-      if (isFutureMonth) return false;
-      const monthStatus = c.monthlyPayments?.[yearMonth];
-      return monthStatus === 'partial';
-    });
+    const paid = withSnapshots.filter(({ snapshot }) => !isFutureMonth && snapshot.outstanding === 0);
+    const partial = withSnapshots.filter(({ snapshot }) => !isFutureMonth && snapshot.outstanding > 0 && snapshot.totalPaid > 0);
+    const pending = withSnapshots.filter(({ snapshot }) => isFutureMonth || snapshot.totalPaid === 0);
 
-    const pending = cityCustomers.filter((c) => {
-      if (isFutureMonth) return true;
-      const monthStatus = c.monthlyPayments?.[yearMonth];
-      return monthStatus === 'pending' || monthStatus === undefined;
-    });
-
-    const paidAmount = paid.reduce((sum, c) => sum + (c.subscriptionValue || 0), 0);
-    const partialAmount = partial.reduce((sum, c) => sum + (c.subscriptionPaid || 0), 0);
-    const pendingAmount = pending.reduce((sum, c) => sum + (c.subscriptionValue || 0), 0);
+    const paidAmount = paid.reduce((sum, entry) => sum + entry.snapshot.totalPaid, 0);
+    const partialAmount = partial.reduce((sum, entry) => sum + entry.snapshot.totalPaid, 0);
+    const pendingAmount = pending.reduce((sum, entry) => sum + entry.snapshot.outstanding, 0);
 
     return { paid, partial, pending, paidAmount, partialAmount, pendingAmount };
   }, [customers, revenuesCityId, revenuesYear, revenuesMonth]);
@@ -523,28 +587,52 @@ function App() {
 
   const confirmPaymentStatusChange = async () => {
     if (!confirmStatusChange) return;
-    
+
     try {
       const today = new Date();
       const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
       const currentYear = today.getFullYear();
       const yearMonth = `${currentYear}-${currentMonth}`;
-      
+
       const updatedPayments = { ...(confirmStatusChange.customer.monthlyPayments || {}) };
       // Convert unpaid to pending for monthlyPayments
       const monthlyStatus = confirmStatusChange.newStatus === 'unpaid' ? 'pending' : confirmStatusChange.newStatus;
       updatedPayments[yearMonth] = monthlyStatus as 'paid' | 'partial' | 'pending';
-      
+
       const updatedCustomer: Customer = {
         ...confirmStatusChange.customer,
         paymentStatus: confirmStatusChange.newStatus,
         monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending'>,
       };
-      
-      if (confirmStatusChange.newStatus === 'partial' && partialPaymentAmount) {
-        updatedCustomer.subscriptionPaid = parseFloat(partialPaymentAmount);
+
+      if (confirmStatusChange.newStatus === 'partial') {
+        const partialValue = parseFloat(partialPaymentAmount);
+        if (!partialPaymentAmount || isNaN(partialValue) || partialValue <= 0) {
+          setToastMessage('أدخل المبلغ المدفوع بشكل صحيح');
+          return;
+        }
+
+        if (partialValue > (confirmStatusChange.customer.subscriptionValue || 0)) {
+          setToastMessage('المبلغ يتجاوز قيمة الاشتراك الشهرية');
+          return;
+        }
+
+        updatedCustomer.subscriptionPaid = partialValue;
+        updatedCustomer.partialPayments = {
+          ...(confirmStatusChange.customer.partialPayments || {}),
+          [yearMonth]: partialValue,
+        };
+      } else if (confirmStatusChange.newStatus === 'paid') {
+        const monthlyValue = confirmStatusChange.customer.subscriptionValue || 0;
+        updatedCustomer.partialPayments = {
+          ...(confirmStatusChange.customer.partialPayments || {}),
+          [yearMonth]: monthlyValue,
+        };
+      } else if (confirmStatusChange.newStatus === 'unpaid' && confirmStatusChange.customer.partialPayments) {
+        const { [yearMonth]: _, ...rest } = confirmStatusChange.customer.partialPayments;
+        updatedCustomer.partialPayments = rest;
       }
-      
+
       await setDoc(doc(db, 'customers', confirmStatusChange.customer.id), updatedCustomer);
       
       // تحديث الحالة المحلية
@@ -1722,6 +1810,11 @@ function App() {
               </div>
             </div>
 
+            <p className="revenues-note">
+              الخطة المحاسبية تحسب إجمالي الاستحقاقات المتراكمة لكل عميل منذ بدء الاشتراك،
+              تسجل المدفوعات الجزئية لكل شهر، وتُظهر الرصيد المتبقي والأشهر المتأخرة لضمان عدم ضياع أي شهر حتى في حالة السداد المتقطع.
+            </p>
+
             <div className="revenues-summary">
               <div className="revenue-card paid">
                 <div className="revenue-label">الإيرادات المستحصلة</div>
@@ -1747,24 +1840,26 @@ function App() {
                   <tr>
                     <th>اسم العميل</th>
                     <th>المدينة</th>
-                    <th>رقم الهاتف</th>
-                    <th>المبلغ</th>
+                    <th>قيمة الاستحقاق حتى الشهر</th>
+                    <th>المدفوع</th>
+                    <th>المتبقي</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {revenuesData.paid.map(customer => {
+                  {revenuesData.paid.map(({ customer, snapshot }) => {
                     const city = cities.find(c => c.id === customer.cityId);
                     return (
                       <tr key={customer.id}>
                         <td>{customer.name}</td>
                         <td>{city?.name || '-'}</td>
-                        <td>{customer.phone || '-'}</td>
-                        <td>{customer.subscriptionValue} ﷼</td>
+                        <td>{snapshot.totalDue.toFixed(0)} ﷼</td>
+                        <td>{snapshot.totalPaid.toFixed(0)} ﷼</td>
+                        <td className="text-success">{snapshot.outstanding.toFixed(0)} ﷼</td>
                       </tr>
                     );
                   })}
                   {revenuesData.paid.length === 0 && (
-                    <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات مستحصلة</td></tr>
+                    <tr><td colSpan={5} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات مستحصلة</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1777,21 +1872,21 @@ function App() {
                   <tr>
                     <th>اسم العميل</th>
                     <th>المدينة</th>
-                    <th>رقم الهاتف</th>
-                    <th>قيمة الاشتراك</th>
-                    <th>المستحصل</th>
+                    <th>أشهر الاستحقاق</th>
+                    <th>المدفوع حتى الآن</th>
+                    <th>المتبقي</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {revenuesData.partial.map(customer => {
+                  {revenuesData.partial.map(({ customer, snapshot }) => {
                     const city = cities.find(c => c.id === customer.cityId);
                     return (
                       <tr key={customer.id}>
                         <td>{customer.name}</td>
                         <td>{city?.name || '-'}</td>
-                        <td>{customer.phone || '-'}</td>
-                        <td>{customer.subscriptionValue} ﷼</td>
-                        <td>{(customer.subscriptionPaid || 0).toFixed(0)} ﷼</td>
+                        <td>{snapshot.dueMonths} شهر</td>
+                        <td>{snapshot.totalPaid.toFixed(0)} ﷼</td>
+                        <td className="text-warning">{snapshot.outstanding.toFixed(0)} ﷼</td>
                       </tr>
                     );
                   })}
@@ -1809,24 +1904,28 @@ function App() {
                   <tr>
                     <th>اسم العميل</th>
                     <th>المدينة</th>
-                    <th>رقم الهاتف</th>
-                    <th>المبلغ المتأخر</th>
+                    <th>عدد الأشهر المتأخرة</th>
+                    <th>المستحق حتى الشهر</th>
+                    <th>المبالغ المسددة</th>
+                    <th>الرصيد المتبقي</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {revenuesData.pending.map(customer => {
+                  {revenuesData.pending.map(({ customer, snapshot }) => {
                     const city = cities.find(c => c.id === customer.cityId);
                     return (
                       <tr key={customer.id}>
                         <td>{customer.name}</td>
                         <td>{city?.name || '-'}</td>
-                        <td>{customer.phone || '-'}</td>
-                        <td>{customer.subscriptionValue} ﷼</td>
+                        <td>{snapshot.arrearsMonths}</td>
+                        <td>{snapshot.totalDue.toFixed(0)} ﷼</td>
+                        <td>{snapshot.totalPaid.toFixed(0)} ﷼</td>
+                        <td className="text-danger">{snapshot.outstanding.toFixed(0)} ﷼</td>
                       </tr>
                     );
                   })}
                   {revenuesData.pending.length === 0 && (
-                    <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات متأخرة</td></tr>
+                    <tr><td colSpan={6} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات متأخرة</td></tr>
                   )}
                 </tbody>
               </table>

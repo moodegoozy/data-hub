@@ -1167,6 +1167,10 @@ body {
   color: var(--warning);
 }
 
+.text-danger {
+  color: var(--danger);
+}
+
 /* ===== CUSTOMER CARD UPDATES ===== */
 .customer-header {
   display: flex;
@@ -1714,6 +1718,16 @@ body {
   font-family: 'Cairo', sans-serif;
   background-color: var(--card);
   cursor: pointer;
+}
+
+.revenues-note {
+  background: #f3f4f6;
+  border: 1px dashed var(--border);
+  padding: 14px 16px;
+  border-radius: 10px;
+  color: var(--text-light);
+  margin: 0 0 18px;
+  line-height: 1.8;
 }
 
 .month-year-selector {
