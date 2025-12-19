@@ -137,7 +137,7 @@ function App() {
 
   const fetchCloudNatIp = async () => {
     try {
-      const base = (process.env.REACT_APP_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+      const base = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
       const res = await fetch(`${base.replace(/\/$/, '')}/ip`);
       const data = await res.json();
       setCloudNatIp(data?.egressIp || 'غير متوفر');
@@ -1429,7 +1429,7 @@ function App() {
                 setMikroLoading(true);
                 setMikroMsg('');
                 try {
-                  const backendBase = (process.env.REACT_APP_BACKEND_URL as string) || 'http://localhost:8080';
+                  const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
                   const targetIp = useCloudNat ? cloudNatIp : mikroIP;
                   const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/connect`, {
                     method: 'POST',
