@@ -1,15 +1,31 @@
 import express from "express";
 import axios from "axios";
+import cors from "cors";
 
 const app = express();
 app.use(express.json());
 
-// تمكين CORS بسيط للسماح للواجهة بالوصول أثناء التطوير
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  next();
-});
+// استخدم حزمة CORS لإرجاع رؤوس Access-Control المناسبة
+// اسمح للأصل المنتج (frontend) بالوصول؛ عدّل القائمة حسب الحاجة
+const allowedOrigins = [
+  'https://datahub-44154.web.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // السماح بالوصول في حال كانت الطلبات من نفس المنشأ أو origin غير موجود (مثل أدوات الاختبار)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
+
+// دعم رد على طلبات preflight
+app.options('*', cors());
 
 // اختبار Cloud NAT
 app.get("/ip", async (_req, res) => {
