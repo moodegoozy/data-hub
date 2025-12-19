@@ -89,7 +89,7 @@ function App() {
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
@@ -1374,12 +1374,30 @@ function App() {
         <button className={`tab-btn ${activeTab === 'expenses' ? 'active' : ''}`} onClick={() => setActiveTab('expenses')}>المصروفات</button>
         <button className={`tab-btn ${activeTab === 'discounts' ? 'active' : ''}`} onClick={() => setActiveTab('discounts')}>الخصومات</button>
         <button className={`tab-btn ${activeTab === 'suspended' ? 'active' : ''}`} onClick={() => setActiveTab('suspended')}>إيقاف مؤقت</button>
+        <button className={`tab-btn ${activeTab === 'microtik' ? 'active' : ''}`} onClick={() => setActiveTab('microtik')}>ميكروتيك</button>
       </div>
 
       {loading ? (
         <div className="loading">جاري التحميل...</div>
       ) : (
       <main className="main-content">
+        {activeTab === 'microtik' && (
+          <div className="section">
+            <h2>الاتصال بجهاز ميكروتيك</h2>
+            <form className="form-group" style={{maxWidth: 400, margin: '0 auto', textAlign: 'right'}} onSubmit={e => {e.preventDefault(); /* TODO: ربط backend */}}>
+              <label>IP جهاز ميكروتيك</label>
+              <input type="text" placeholder="مثال: 192.168.88.1" required />
+              <label>اسم المستخدم</label>
+              <input type="text" placeholder="admin" required />
+              <label>كلمة المرور</label>
+              <input type="password" placeholder="••••••" required />
+              <button type="submit" className="btn primary" style={{marginTop: 16}}>اتصل الآن</button>
+            </form>
+            <div style={{marginTop: 24, color: '#888', fontSize: 15}}>
+              <b>ملاحظة:</b> يجب تفعيل API في جهاز ميكروتيك، ويُنصح باستخدام سيرفر وسيط (backend) للاتصال.
+            </div>
+          </div>
+        )}
         {activeTab === 'dashboard' && (
           <>
             <div className="section">
