@@ -125,7 +125,37 @@ function App() {
   const [discountYear, setDiscountYear] = useState(new Date().getFullYear());
   const [transferPassword, setTransferPassword] = useState('');
   const [transferLoading, setTransferLoading] = useState(false);
-  
+
+  // ميكروتيك - حالة النموذج والنتيجة
+  const [mikroIP, setMikroIP] = useState('');
+  const [mikroUser, setMikroUser] = useState('');
+  const [mikroPass, setMikroPass] = useState('');
+  const [mikroLoading, setMikroLoading] = useState(false);
+  const [mikroMsg, setMikroMsg] = useState('');
+  // Cloud NAT IP from backend (Cloud Run)
+  const [cloudNatIp, setCloudNatIp] = useState<string>('جارٍ التحميل...');
+
+  const fetchCloudNatIp = async () => {
+    try {
+      const base = (process.env.REACT_APP_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+      const res = await fetch(`${base.replace(/\/$/, '')}/ip`);
+      const data = await res.json();
+      setCloudNatIp(data?.egressIp || 'غير متوفر');
+    } catch (err) {
+      setCloudNatIp('خطأ');
+    }
+  };
+
+  // whether to use cloud NAT as mikro IP
+  const [useCloudNat, setUseCloudNat] = useState(false);
+
+  // fetch Cloud NAT once when mikro tab is opened
+  useEffect(() => {
+    if (activeTab === 'microtik') {
+      fetchCloudNatIp();
+    }
+  }, [activeTab]);
+
   // المصروفات
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [expenseName, setExpenseName] = useState('');
@@ -1384,17 +1414,86 @@ function App() {
         {activeTab === 'microtik' && (
           <div className="section">
             <h2>الاتصال بجهاز ميكروتيك</h2>
-            <form className="form-group" style={{maxWidth: 400, margin: '0 auto', textAlign: 'right'}} onSubmit={e => {e.preventDefault(); /* TODO: ربط backend */}}>
-              <label>IP جهاز ميكروتيك</label>
-              <input type="text" placeholder="مثال: 192.168.88.1" required />
+            <div style={{ maxWidth: 500, margin: '8px auto 20px', textAlign: 'right' }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>Cloud NAT IP</h3>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                <div style={{ color: '#111', fontWeight: 700 }}>{cloudNatIp}</div>
+                <button className="btn ghost" onClick={fetchCloudNatIp} type="button">تحديث</button>
+              </div>
+            </div>
+            <form
+              className="form-group"
+              style={{ maxWidth: 400, margin: '0 auto', textAlign: 'right' }}
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setMikroLoading(true);
+                setMikroMsg('');
+                try {
+                  const backendBase = (process.env.REACT_APP_BACKEND_URL as string) || 'http://localhost:8080';
+                  const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                  const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: targetIp, username: mikroUser, password: mikroPass }),
+                  });
+                  const data = await res.json();
+                  if (res.ok) {
+                    setMikroMsg(`تم الاتصال — ${data.message || 'نجاح'}`);
+                  } else {
+                    setMikroMsg(`فشل: ${data.error || JSON.stringify(data)}`);
+                  }
+                } catch (err) {
+                  setMikroMsg('خطأ في الاتصال بالسيرفر');
+                } finally {
+                  setMikroLoading(false);
+                }
+              }}
+            >
+              <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>IP جهاز ميكروتيك</span>
+                <label style={{ fontSize: 13, color: '#666' }}>
+                  <input type="checkbox" checked={useCloudNat} onChange={(e) => setUseCloudNat(e.target.checked)} style={{ marginLeft: 8 }} />
+                  استخدام Cloud NAT
+                </label>
+              </label>
+              <input
+                type="text"
+                placeholder="مثال: 192.168.88.1"
+                required={!useCloudNat}
+                value={useCloudNat ? cloudNatIp : mikroIP}
+                onChange={(e) => setMikroIP(e.target.value)}
+                disabled={useCloudNat}
+              />
+
               <label>اسم المستخدم</label>
-              <input type="text" placeholder="admin" required />
+              <input
+                type="text"
+                placeholder="admin"
+                required
+                value={mikroUser}
+                onChange={(e) => setMikroUser(e.target.value)}
+              />
+
               <label>كلمة المرور</label>
-              <input type="password" placeholder="••••••" required />
-              <button type="submit" className="btn primary" style={{marginTop: 16}}>اتصل الآن</button>
+              <input
+                type="password"
+                placeholder="••••••"
+                required
+                value={mikroPass}
+                onChange={(e) => setMikroPass(e.target.value)}
+              />
+
+              <button type="submit" className="btn primary" style={{ marginTop: 16 }} disabled={mikroLoading}>
+                {mikroLoading ? 'جارٍ الاتصال...' : 'اتصل الآن'}
+              </button>
             </form>
-            <div style={{marginTop: 24, color: '#888', fontSize: 15}}>
-              <b>ملاحظة:</b> يجب تفعيل API في جهاز ميكروتيك، ويُنصح باستخدام سيرفر وسيط (backend) للاتصال.
+
+            {mikroMsg && (
+              <div style={{ marginTop: 16, color: mikroMsg.startsWith('تم') ? 'green' : 'red' }}>{mikroMsg}</div>
+            )}
+
+            <div style={{ marginTop: 24, color: '#888', fontSize: 15 }}>
+              <b>ملاحظة:</b> يجب تفعيل API في جهاز ميكروتيك، ويُنصح باستخدام سيرفر وسيط (backend) للاتصال. قد يحتاج التطبيق إعداد CORS أو متغير بيئة `REACT_APP_BACKEND_URL` لعنوان السيرفر.
             </div>
           </div>
         )}

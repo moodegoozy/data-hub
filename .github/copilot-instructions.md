@@ -123,3 +123,13 @@ npm run lint         # Type-check only (tsc --noEmit, no eslint)
 8. **Security**: Modify `firestore.rules` when adding new collections or changing access patterns
 9. **Tab structure**: App has three main tabs: 'dashboard' (cities/customers), 'invoices' (PDF generation), 'yearly' (monthly payment tracking)
 10. **Modals**: Destructive actions should follow the confirm pattern with password re-auth (`EditPasswordModal`, `DeleteConfirm`)
+
+## Quick reference — where to start
+- **Key files**: `frontend/src/App.tsx` (main UI), `frontend/src/firebase.ts` (Firebase helpers/config), `frontend/README.md` (dev notes). There is a top-level `src/` that is sometimes used; prefer `frontend/src/` for UI changes.
+- **Useful grep targets**: `onSnapshot`, `setDoc(doc(db,`, `EmailAuthProvider.credential()`, `generateInvoicePDF()` (dynamic import example).
+
+## PR checklist for agents
+- Run `npm run lint` (TypeScript check) and `npm run build`.
+- Smoke-test core flows: sign-in, add/edit/delete city & customer, monthly payment toggles, and invoice PDF generation.
+- Ensure no `undefined` values are written to Firestore and update `firestore.rules` if you add new collections/fields.
+- Preserve RTL/Arabic UI and `ar-EG` date formatting for displayed dates.
