@@ -1434,7 +1434,7 @@ function App() {
                   const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/connect`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ip: targetIp, username: mikroUser, password: mikroPass }),
+                    body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
                   });
                   const data = await res.json();
                   if (res.ok) {
