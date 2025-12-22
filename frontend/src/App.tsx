@@ -134,6 +134,26 @@ function App() {
   const [mikroMsg, setMikroMsg] = useState('');
   // Cloud NAT IP from backend (Cloud Run)
   const [cloudNatIp, setCloudNatIp] = useState<string>('جارٍ التحميل...');
+  
+  // ميكروتيك داشبورد - حالة متقدمة
+  const [mikroConnected, setMikroConnected] = useState(false);
+  const [mikroDashboard, setMikroDashboard] = useState<{
+    identity: string;
+    system: { uptime?: string; version?: string; cpuLoad?: string; freeMemory?: string; totalMemory?: string; architecture?: string; boardName?: string };
+    routerboard: { model?: string; serialNumber?: string; firmware?: string };
+    secrets: { id: string; name: string; service: string; profile: string; remoteAddress?: string; disabled: boolean }[];
+    activeConnections: { id: string; name: string; service: string; callerId?: string; address?: string; uptime?: string }[];
+    interfaces: { id: string; name: string; type: string; running: boolean; disabled: boolean }[];
+  } | null>(null);
+  const [mikroProfiles, setMikroProfiles] = useState<{ id: string; name: string; localAddress?: string; remoteAddress?: string; rateLimit?: string }[]>([]);
+  const [mikroTab, setMikroTab] = useState<'overview' | 'secrets' | 'active' | 'interfaces'>('overview');
+  const [showAddSecretModal, setShowAddSecretModal] = useState(false);
+  const [newSecretName, setNewSecretName] = useState('');
+  const [newSecretPassword, setNewSecretPassword] = useState('');
+  const [newSecretProfile, setNewSecretProfile] = useState('');
+  const [newSecretRemoteAddress, setNewSecretRemoteAddress] = useState('');
+  const [secretSearch, setSecretSearch] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
 
   const fetchCloudNatIp = async () => {
     try {
@@ -1412,89 +1432,510 @@ function App() {
       ) : (
       <main className="main-content">
         {activeTab === 'microtik' && (
-          <div className="section">
-            <h2>الاتصال بجهاز ميكروتيك</h2>
-            <div style={{ maxWidth: 500, margin: '8px auto 20px', textAlign: 'right' }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>Cloud NAT IP</h3>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-                <div style={{ color: '#111', fontWeight: 700 }}>{cloudNatIp}</div>
-                <button className="btn ghost" onClick={fetchCloudNatIp} type="button">تحديث</button>
-              </div>
-            </div>
-            <form
-              className="form-group"
-              style={{ maxWidth: 400, margin: '0 auto', textAlign: 'right' }}
-              onSubmit={async (e) => {
-                e.preventDefault();
-                setMikroLoading(true);
-                setMikroMsg('');
-                try {
-                  const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
-                  const targetIp = useCloudNat ? cloudNatIp : mikroIP;
-                  const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/connect`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
-                  });
-                  const data = await res.json();
-                  if (res.ok) {
-                    setMikroMsg(`تم الاتصال — ${data.message || 'نجاح'}`);
-                  } else {
-                    setMikroMsg(`فشل: ${data.error || JSON.stringify(data)}`);
-                  }
-                } catch (err) {
-                  setMikroMsg('خطأ في الاتصال بالسيرفر');
-                } finally {
-                  setMikroLoading(false);
-                }
-              }}
-            >
-              <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>IP جهاز ميكروتيك</span>
-                <label style={{ fontSize: 13, color: '#666' }}>
-                  <input type="checkbox" checked={useCloudNat} onChange={(e) => setUseCloudNat(e.target.checked)} style={{ marginLeft: 8 }} />
-                  استخدام Cloud NAT
-                </label>
-              </label>
-              <input
-                type="text"
-                placeholder="مثال: 192.168.88.1"
-                required={!useCloudNat}
-                value={useCloudNat ? cloudNatIp : mikroIP}
-                onChange={(e) => setMikroIP(e.target.value)}
-                disabled={useCloudNat}
-              />
+          <div className="section mikrotik-section">
+            {!mikroConnected ? (
+              <>
+                <h2>الاتصال بجهاز ميكروتيك</h2>
+                <div style={{ maxWidth: 500, margin: '8px auto 20px', textAlign: 'right' }}>
+                  <h3 style={{ margin: 0, fontSize: 16 }}>Cloud NAT IP</h3>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                    <div style={{ color: '#111', fontWeight: 700 }}>{cloudNatIp}</div>
+                    <button className="btn ghost" onClick={fetchCloudNatIp} type="button">تحديث</button>
+                  </div>
+                </div>
+                <form
+                  className="form-group"
+                  style={{ maxWidth: 400, margin: '0 auto', textAlign: 'right' }}
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setMikroLoading(true);
+                    setMikroMsg('');
+                    try {
+                      const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+                      const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                      
+                      // جلب الداشبورد الكامل
+                      const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/dashboard`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                      });
+                      const data = await res.json();
+                      if (res.ok && data.connected) {
+                        setMikroDashboard(data);
+                        setMikroConnected(true);
+                        setMikroMsg('');
+                        
+                        // جلب البروفايلات
+                        const profileRes = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/profiles`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                        });
+                        const profileData = await profileRes.json();
+                        if (profileRes.ok) {
+                          setMikroProfiles(profileData.profiles || []);
+                        }
+                      } else {
+                        setMikroMsg(`فشل: ${data.error || JSON.stringify(data)}`);
+                      }
+                    } catch (err) {
+                      setMikroMsg('خطأ في الاتصال بالسيرفر');
+                    } finally {
+                      setMikroLoading(false);
+                    }
+                  }}
+                >
+                  <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>IP جهاز ميكروتيك</span>
+                    <label style={{ fontSize: 13, color: '#666' }}>
+                      <input type="checkbox" checked={useCloudNat} onChange={(e) => setUseCloudNat(e.target.checked)} style={{ marginLeft: 8 }} />
+                      استخدام Cloud NAT
+                    </label>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="مثال: 192.168.88.1"
+                    required={!useCloudNat}
+                    value={useCloudNat ? cloudNatIp : mikroIP}
+                    onChange={(e) => setMikroIP(e.target.value)}
+                    disabled={useCloudNat}
+                  />
 
-              <label>اسم المستخدم</label>
-              <input
-                type="text"
-                placeholder="admin"
-                required
-                value={mikroUser}
-                onChange={(e) => setMikroUser(e.target.value)}
-              />
+                  <label>اسم المستخدم</label>
+                  <input
+                    type="text"
+                    placeholder="admin"
+                    required
+                    value={mikroUser}
+                    onChange={(e) => setMikroUser(e.target.value)}
+                  />
 
-              <label>كلمة المرور</label>
-              <input
-                type="password"
-                placeholder="••••••"
-                required
-                value={mikroPass}
-                onChange={(e) => setMikroPass(e.target.value)}
-              />
+                  <label>كلمة المرور</label>
+                  <input
+                    type="password"
+                    placeholder="••••••"
+                    required
+                    value={mikroPass}
+                    onChange={(e) => setMikroPass(e.target.value)}
+                  />
 
-              <button type="submit" className="btn primary" style={{ marginTop: 16 }} disabled={mikroLoading}>
-                {mikroLoading ? 'جارٍ الاتصال...' : 'اتصل الآن'}
-              </button>
-            </form>
+                  <button type="submit" className="btn primary" style={{ marginTop: 16 }} disabled={mikroLoading}>
+                    {mikroLoading ? 'جارٍ الاتصال...' : 'اتصل الآن'}
+                  </button>
+                </form>
 
-            {mikroMsg && (
-              <div style={{ marginTop: 16, color: mikroMsg.startsWith('تم') ? 'green' : 'red' }}>{mikroMsg}</div>
+                {mikroMsg && (
+                  <div style={{ marginTop: 16, color: mikroMsg.startsWith('تم') ? 'green' : 'red' }}>{mikroMsg}</div>
+                )}
+
+                <div style={{ marginTop: 24, color: '#888', fontSize: 15 }}>
+                  <b>ملاحظة:</b> يجب تفعيل API في جهاز ميكروتيك من IP &gt; Services &gt; api (port 8728)
+                </div>
+              </>
+            ) : (
+              <>
+                {/* رأس الداشبورد */}
+                <div className="mikrotik-header">
+                  <div className="mikrotik-identity">
+                    <h2>🌐 {mikroDashboard?.identity || 'MikroTik'}</h2>
+                    <span className="mikrotik-connected-badge">متصل</span>
+                  </div>
+                  <button
+                    className="btn secondary"
+                    onClick={() => {
+                      setMikroConnected(false);
+                      setMikroDashboard(null);
+                      setMikroProfiles([]);
+                      setMikroTab('overview');
+                    }}
+                  >
+                    قطع الاتصال
+                  </button>
+                </div>
+
+                {/* تبويبات فرعية */}
+                <div className="mikrotik-tabs">
+                  <button className={`mikro-tab ${mikroTab === 'overview' ? 'active' : ''}`} onClick={() => setMikroTab('overview')}>نظرة عامة</button>
+                  <button className={`mikro-tab ${mikroTab === 'secrets' ? 'active' : ''}`} onClick={() => setMikroTab('secrets')}>PPPoE Secrets</button>
+                  <button className={`mikro-tab ${mikroTab === 'active' ? 'active' : ''}`} onClick={() => setMikroTab('active')}>الاتصالات النشطة</button>
+                  <button className={`mikro-tab ${mikroTab === 'interfaces' ? 'active' : ''}`} onClick={() => setMikroTab('interfaces')}>الانترفيسات</button>
+                </div>
+
+                {/* نظرة عامة */}
+                {mikroTab === 'overview' && mikroDashboard && (
+                  <div className="mikrotik-overview">
+                    <div className="mikro-stats-grid">
+                      <div className="mikro-stat-card">
+                        <span className="mikro-stat-label">الموديل</span>
+                        <span className="mikro-stat-value">{mikroDashboard.routerboard?.model || mikroDashboard.system?.boardName || '-'}</span>
+                      </div>
+                      <div className="mikro-stat-card">
+                        <span className="mikro-stat-label">الإصدار</span>
+                        <span className="mikro-stat-value">{mikroDashboard.system?.version || '-'}</span>
+                      </div>
+                      <div className="mikro-stat-card">
+                        <span className="mikro-stat-label">وقت التشغيل</span>
+                        <span className="mikro-stat-value">{mikroDashboard.system?.uptime || '-'}</span>
+                      </div>
+                      <div className="mikro-stat-card">
+                        <span className="mikro-stat-label">حمل المعالج</span>
+                        <span className="mikro-stat-value">{mikroDashboard.system?.cpuLoad || '0'}%</span>
+                      </div>
+                      <div className="mikro-stat-card">
+                        <span className="mikro-stat-label">الذاكرة المتاحة</span>
+                        <span className="mikro-stat-value">{mikroDashboard.system?.freeMemory ? Math.round(parseInt(mikroDashboard.system.freeMemory) / 1024 / 1024) + ' MB' : '-'}</span>
+                      </div>
+                      <div className="mikro-stat-card">
+                        <span className="mikro-stat-label">البنية</span>
+                        <span className="mikro-stat-value">{mikroDashboard.system?.architecture || '-'}</span>
+                      </div>
+                    </div>
+                    <div className="mikro-summary-cards">
+                      <div className="mikro-summary-card">
+                        <span className="mikro-summary-number">{mikroDashboard.secrets?.length || 0}</span>
+                        <span className="mikro-summary-label">PPPoE Secrets</span>
+                      </div>
+                      <div className="mikro-summary-card active">
+                        <span className="mikro-summary-number">{mikroDashboard.activeConnections?.length || 0}</span>
+                        <span className="mikro-summary-label">اتصالات نشطة</span>
+                      </div>
+                      <div className="mikro-summary-card">
+                        <span className="mikro-summary-number">{mikroDashboard.interfaces?.filter(i => i.running).length || 0}</span>
+                        <span className="mikro-summary-label">انترفيسات تعمل</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* PPPoE Secrets */}
+                {mikroTab === 'secrets' && mikroDashboard && (
+                  <div className="mikrotik-secrets">
+                    <div className="mikro-toolbar">
+                      <input
+                        type="text"
+                        placeholder="بحث عن secret..."
+                        value={secretSearch}
+                        onChange={(e) => setSecretSearch(e.target.value)}
+                        className="mikro-search"
+                      />
+                      <button className="btn primary" onClick={() => setShowAddSecretModal(true)}>+ إضافة Secret</button>
+                    </div>
+                    <div className="mikro-table-container">
+                      <table className="mikro-table">
+                        <thead>
+                          <tr>
+                            <th>الاسم</th>
+                            <th>الخدمة</th>
+                            <th>البروفايل</th>
+                            <th>IP</th>
+                            <th>الحالة</th>
+                            <th>إجراءات</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mikroDashboard.secrets
+                            .filter(s => !secretSearch || s.name.toLowerCase().includes(secretSearch.toLowerCase()))
+                            .map((secret) => (
+                              <tr key={secret.id} className={secret.disabled ? 'disabled-row' : ''}>
+                                <td>{secret.name}</td>
+                                <td>{secret.service}</td>
+                                <td>{secret.profile}</td>
+                                <td>{secret.remoteAddress || '-'}</td>
+                                <td>
+                                  <span className={`status-badge ${secret.disabled ? 'inactive' : 'active'}`}>
+                                    {secret.disabled ? 'معطل' : 'فعال'}
+                                  </span>
+                                </td>
+                                <td>
+                                  <div className="mikro-actions">
+                                    <button
+                                      className="btn ghost small"
+                                      onClick={async () => {
+                                        const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+                                        const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                                        try {
+                                          await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/secrets/${secret.id}/toggle`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass, disabled: !secret.disabled }),
+                                          });
+                                          // تحديث البيانات
+                                          const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/dashboard`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                                          });
+                                          const data = await res.json();
+                                          if (res.ok) setMikroDashboard(data);
+                                          setToastMessage(secret.disabled ? 'تم تفعيل المستخدم' : 'تم تعطيل المستخدم');
+                                        } catch (err) {
+                                          setToastMessage('خطأ في العملية');
+                                        }
+                                      }}
+                                    >
+                                      {secret.disabled ? 'تفعيل' : 'تعطيل'}
+                                    </button>
+                                    <button
+                                      className="btn danger small"
+                                      onClick={async () => {
+                                        if (!confirm(`هل أنت متأكد من حذف ${secret.name}؟`)) return;
+                                        const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+                                        const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                                        try {
+                                          await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/secrets/${secret.id}`, {
+                                            method: 'DELETE',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                                          });
+                                          // تحديث البيانات
+                                          const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/dashboard`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                                          });
+                                          const data = await res.json();
+                                          if (res.ok) setMikroDashboard(data);
+                                          setToastMessage('تم الحذف بنجاح');
+                                        } catch (err) {
+                                          setToastMessage('خطأ في الحذف');
+                                        }
+                                      }}
+                                    >
+                                      حذف
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* الاتصالات النشطة */}
+                {mikroTab === 'active' && mikroDashboard && (
+                  <div className="mikrotik-active">
+                    <div className="mikro-toolbar">
+                      <input
+                        type="text"
+                        placeholder="بحث..."
+                        value={activeSearch}
+                        onChange={(e) => setActiveSearch(e.target.value)}
+                        className="mikro-search"
+                      />
+                      <button
+                        className="btn secondary"
+                        onClick={async () => {
+                          const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+                          const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                          const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/dashboard`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                          });
+                          const data = await res.json();
+                          if (res.ok) setMikroDashboard(data);
+                        }}
+                      >
+                        تحديث
+                      </button>
+                    </div>
+                    <div className="mikro-table-container">
+                      <table className="mikro-table">
+                        <thead>
+                          <tr>
+                            <th>الاسم</th>
+                            <th>الخدمة</th>
+                            <th>العنوان</th>
+                            <th>Caller ID</th>
+                            <th>مدة الاتصال</th>
+                            <th>إجراءات</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mikroDashboard.activeConnections
+                            .filter(c => !activeSearch || c.name.toLowerCase().includes(activeSearch.toLowerCase()))
+                            .map((conn) => (
+                              <tr key={conn.id}>
+                                <td>{conn.name}</td>
+                                <td>{conn.service}</td>
+                                <td>{conn.address || '-'}</td>
+                                <td>{conn.callerId || '-'}</td>
+                                <td>{conn.uptime || '-'}</td>
+                                <td>
+                                  <button
+                                    className="btn danger small"
+                                    onClick={async () => {
+                                      if (!confirm(`هل أنت متأكد من فصل ${conn.name}؟`)) return;
+                                      const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+                                      const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                                      try {
+                                        await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/active/${conn.id}/disconnect`, {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                                        });
+                                        // تحديث البيانات
+                                        const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/dashboard`, {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                                        });
+                                        const data = await res.json();
+                                        if (res.ok) setMikroDashboard(data);
+                                        setToastMessage('تم الفصل بنجاح');
+                                      } catch (err) {
+                                        setToastMessage('خطأ في الفصل');
+                                      }
+                                    }}
+                                  >
+                                    فصل
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                      {mikroDashboard.activeConnections.length === 0 && (
+                        <div className="mikro-empty">لا توجد اتصالات نشطة</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* الانترفيسات */}
+                {mikroTab === 'interfaces' && mikroDashboard && (
+                  <div className="mikrotik-interfaces">
+                    <div className="mikro-table-container">
+                      <table className="mikro-table">
+                        <thead>
+                          <tr>
+                            <th>الاسم</th>
+                            <th>النوع</th>
+                            <th>الحالة</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mikroDashboard.interfaces.map((iface) => (
+                            <tr key={iface.id} className={iface.disabled ? 'disabled-row' : ''}>
+                              <td>{iface.name}</td>
+                              <td>{iface.type}</td>
+                              <td>
+                                <span className={`status-badge ${iface.running ? 'active' : 'inactive'}`}>
+                                  {iface.running ? 'يعمل' : 'متوقف'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* مودال إضافة Secret */}
+                {showAddSecretModal && (
+                  <div className="modal-overlay" onClick={() => setShowAddSecretModal(false)}>
+                    <div className="modal" onClick={(e) => e.stopPropagation()}>
+                      <h3>إضافة PPPoE Secret جديد</h3>
+                      <form
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          const backendBase = (import.meta.env.VITE_BACKEND_URL as string) || 'https://mikrotik-api-923854285496.europe-west1.run.app';
+                          const targetIp = useCloudNat ? cloudNatIp : mikroIP;
+                          try {
+                            const res = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/secrets`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                host: targetIp,
+                                username: mikroUser,
+                                password: mikroPass,
+                                secret: {
+                                  name: newSecretName,
+                                  password: newSecretPassword,
+                                  profile: newSecretProfile || undefined,
+                                  remoteAddress: newSecretRemoteAddress || undefined,
+                                },
+                              }),
+                            });
+                            if (res.ok) {
+                              // تحديث البيانات
+                              const dashRes = await fetch(`${backendBase.replace(/\/$/, '')}/mikrotik/dashboard`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ host: targetIp, username: mikroUser, password: mikroPass }),
+                              });
+                              const data = await dashRes.json();
+                              if (dashRes.ok) setMikroDashboard(data);
+                              setShowAddSecretModal(false);
+                              setNewSecretName('');
+                              setNewSecretPassword('');
+                              setNewSecretProfile('');
+                              setNewSecretRemoteAddress('');
+                              setToastMessage('تمت الإضافة بنجاح');
+                            } else {
+                              const err = await res.json();
+                              setToastMessage(`خطأ: ${err.error}`);
+                            }
+                          } catch (err) {
+                            setToastMessage('خطأ في الإضافة');
+                          }
+                        }}
+                      >
+                        <div className="form-group">
+                          <label>اسم المستخدم (Secret Name)</label>
+                          <input
+                            type="text"
+                            value={newSecretName}
+                            onChange={(e) => setNewSecretName(e.target.value)}
+                            required
+                            placeholder="اسم المشترك"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label>كلمة المرور</label>
+                          <input
+                            type="text"
+                            value={newSecretPassword}
+                            onChange={(e) => setNewSecretPassword(e.target.value)}
+                            required
+                            placeholder="كلمة المرور"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label>البروفايل</label>
+                          <select
+                            value={newSecretProfile}
+                            onChange={(e) => setNewSecretProfile(e.target.value)}
+                          >
+                            <option value="">افتراضي</option>
+                            {mikroProfiles.map((p) => (
+                              <option key={p.id} value={p.name}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>عنوان IP (اختياري)</label>
+                          <input
+                            type="text"
+                            value={newSecretRemoteAddress}
+                            onChange={(e) => setNewSecretRemoteAddress(e.target.value)}
+                            placeholder="مثال: 10.0.0.100"
+                          />
+                        </div>
+                        <div className="modal-actions">
+                          <button type="submit" className="btn primary">إضافة</button>
+                          <button type="button" className="btn secondary" onClick={() => setShowAddSecretModal(false)}>إلغاء</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
-
-            <div style={{ marginTop: 24, color: '#888', fontSize: 15 }}>
-              <b>ملاحظة:</b> يجب تفعيل API في جهاز ميكروتيك، ويُنصح باستخدام سيرفر وسيط (backend) للاتصال. قد يحتاج التطبيق إعداد CORS أو متغير بيئة `REACT_APP_BACKEND_URL` لعنوان السيرفر.
-            </div>
           </div>
         )}
         {activeTab === 'dashboard' && (

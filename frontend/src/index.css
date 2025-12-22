@@ -2475,3 +2475,318 @@ body {
     gap: 4px;
   }
 }
+
+/* ===== MIKROTIK DASHBOARD ===== */
+.mikrotik-section {
+  direction: rtl;
+}
+
+.mikrotik-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid var(--border);
+}
+
+.mikrotik-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mikrotik-identity h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.mikrotik-connected-badge {
+  background: var(--success);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.mikrotik-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.mikro-tab {
+  padding: 10px 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-light);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.mikro-tab:hover {
+  background: rgba(30, 64, 175, 0.1);
+  color: var(--primary);
+}
+
+.mikro-tab.active {
+  background: var(--primary);
+  color: white;
+}
+
+/* Overview Stats */
+.mikrotik-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.mikro-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.mikro-stat-card {
+  background: var(--card);
+  padding: 20px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+}
+
+.mikro-stat-label {
+  font-size: 0.85rem;
+  color: var(--text-light);
+  font-weight: 500;
+}
+
+.mikro-stat-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mikro-summary-cards {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mikro-summary-card {
+  flex: 1;
+  min-width: 150px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 24px;
+  border-radius: var(--radius);
+  text-align: center;
+  box-shadow: var(--shadow-md);
+}
+
+.mikro-summary-card.active {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+}
+
+.mikro-summary-number {
+  font-size: 2.5rem;
+  font-weight: 800;
+  display: block;
+}
+
+.mikro-summary-label {
+  font-size: 0.9rem;
+  opacity: 0.9;
+}
+
+/* Toolbar */
+.mikro-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.mikro-search {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px 16px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.mikro-search:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* Tables */
+.mikro-table-container {
+  overflow-x: auto;
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+
+.mikro-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.mikro-table th,
+.mikro-table td {
+  padding: 14px 16px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+
+.mikro-table th {
+  background: #f8fafc;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.mikro-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.mikro-table tbody tr.disabled-row {
+  opacity: 0.6;
+  background: #fef2f2;
+}
+
+.mikro-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.status-badge.active {
+  background: #d1fae5;
+  color: #059669;
+}
+
+.status-badge.inactive {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* Actions */
+.mikro-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn.small {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
+
+.btn.ghost:hover {
+  background: var(--primary);
+  color: white;
+}
+
+/* Empty state */
+.mikro-empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-light);
+  font-size: 1rem;
+}
+
+/* Modal styles for mikrotik */
+.mikrotik-section .modal {
+  max-width: 450px;
+}
+
+.mikrotik-section .form-group {
+  margin-bottom: 16px;
+}
+
+.mikrotik-section .form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.mikrotik-section .form-group input,
+.mikrotik-section .form-group select {
+  width: 100%;
+  padding: 10px 14px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.mikrotik-section .form-group input:focus,
+.mikrotik-section .form-group select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+@media (max-width: 768px) {
+  .mikrotik-header {
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+  }
+
+  .mikrotik-tabs {
+    justify-content: center;
+  }
+
+  .mikro-summary-cards {
+    flex-direction: column;
+  }
+
+  .mikro-table th,
+  .mikro-table td {
+    padding: 10px 12px;
+    font-size: 0.85rem;
+  }
+
+  .mikro-actions {
+    flex-direction: column;
+  }
+}
+

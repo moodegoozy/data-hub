@@ -1,135 +1,83 @@
-# Copilot Instructions for data-hub
+# Data Hub - Copilot Instructions
 
-## Architecture Overview
+## Project Overview
+Arabic-language subscriber management dashboard for ISP customers. Manages cities, customer subscriptions, monthly payments, expenses, and MikroTik router integration.
 
-This is a **React/TypeScript web application** for managing internet service provider (ISP) customer subscriptions across multiple cities. The app is built with Vite and uses **Firebase Authentication + Firestore** for data persistence and multi-user access control.
+## Architecture
 
-### Core Architecture
-- **Single-page app** (`src/App.tsx`): Monolithic component (~1,390 lines) handling authentication, city management, customer CRUD, invoice generation, and monthly payment tracking
-- **Firebase backend** (`src/firebase.ts`): 
-  - Authentication: Email/password login with session persistence via `onAuthStateChanged`
-  - Firestore: Two collections (`cities`, `customers`) with real-time listeners (`onSnapshot`)
-  - Security: Read/write access restricted to authenticated users only (see `firestore.rules`)
-- **Build chain**: Vite (dev server) → React Fast Refresh → static dist/ for Firebase Hosting
-- **UI language**: Fully Arabic with `dir="rtl"` and Cairo font; dates formatted with `'ar-EG'` locale
+### Monorepo Structure
+- **Root** (`/`): Legacy React app (can be ignored - frontend/ is the active version)
+- **`frontend/`**: Active React + TypeScript + Vite app, deployed to Firebase Hosting
+- **`backend/`**: Express + TypeScript API for MikroTik integration, deployed to Google Cloud Run
 
-### Data Model
-Two Firestore collections with real-time sync:
-```typescript
-type City { id, name }
-type Customer {
-  id, cityId, name, phone?, startDate?, subscriptionValue?, 
-  setupFeeTotal?, setupFeePaid?, ipNumber?, userName?,
-  additionalRouters?: { userName, ipNumber }[],
-  lap?, site?, notes?, paymentStatus?: 'paid' | 'unpaid',
-  monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' }
-}
+### Data Flow
 ```
-**Key patterns**: 
-- Customers belong to a city (foreign key: `cityId`)
-- Deleting a city cascades to all its customers
-- `paymentStatus` tracks historical subscription state (paid/unpaid)
-- `monthlyPayments` object tracks granular monthly state (keyed as 'YYYY-MM') with 3 states
-- `additionalRouters` array supports multiple network devices per customer
-- `startDate` stored as ISO string (YYYY-MM-DD format)
+Frontend (React) → Firebase Auth → Firestore (cities, customers, expenses, incomes)
+Frontend → Backend API → MikroTik routers (via Cloud NAT)
+```
 
-## Developer Workflows
+### Key Firebase Collections
+- `cities` - Customer regions/areas
+- `customers` - Subscriber data with `cityId` reference, monthly payment status tracking
+- `expenses` / `incomes` - Financial records with month/year indexing
 
-### Local Development
+## Development Commands
+
 ```bash
-npm run dev          # Start Vite dev server (hot reload enabled)
-npm run build        # Production build → dist/
-npm run preview      # Preview production build locally
-npm run lint         # Type-check only (tsc --noEmit, no eslint)
+# Frontend (in /frontend)
+npm install && npm run dev      # Dev server at localhost:5173
+npm run build                   # Build to frontend/dist/
+npm run lint                    # TypeScript check (tsc --noEmit)
+
+# Backend (in /backend)
+npm install && npm run dev      # ts-node-dev with auto-reload
+npm run build && npm start      # Production build
 ```
-**Note**: Firebase packages are NOT in package.json but imported in code - they're CDN-loaded or externally managed. Check imports if build fails.
 
-### Deployment
-- **Firebase Hosting**: `firebase.json` configured for SPA routing (all paths → /index.html)
-- **Pre-deployment steps**:
-  1. `npm run build` to generate `dist/` directory
-  2. Verify Firebase config in `src/firebase.ts` matches production project
-  3. `firebase deploy` (requires Firebase CLI and authenticated session)
-- **Firestore rules**: Deployed separately via `firestore.rules` - all authenticated users have full read/write access
+## Code Patterns
 
-## Key Conventions & Patterns
+### Single-File Frontend Architecture
+The entire frontend lives in [frontend/src/App.tsx](frontend/src/App.tsx) (~2900 lines). When adding features:
+- Add state variables to the existing App component
+- Use `useMemo` for derived data (see `filteredCustomers`, `invoiceFilteredCustomers`)
+- Use Firebase `onSnapshot` for real-time updates
 
-### Firestore Real-time Sync Strategy
-- **onSnapshot listeners**: Two active listeners (cities, customers) established in `useEffect` when `isAuthenticated` becomes true
-- **Automatic UI updates**: State updates (`setCities`, `setCustomers`) trigger re-renders; no manual polling needed
-- **Cleanup pattern**: Return unsubscribe functions in useEffect to prevent memory leaks on unmount
-- **Write operations**: All use `setDoc(doc(db, collection, id), data)` for creates/updates, `deleteDoc` for deletes
-- **Undefined handling**: Firestore rejects `undefined` values - all writes build clean objects excluding undefined/null/empty strings
-- **Query pattern**: No complex queries - all filtering done in React via `useMemo` (e.g., `filteredCustomers` by city)
+### Type Definitions (in App.tsx)
+```typescript
+type Customer = {
+  id: string; cityId: string; name: string;
+  monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
+  // ... other fields
+};
+```
 
-### Payment Tracking System
-- **Two-tier payment model**:
-  - `paymentStatus` (enum: 'paid'|'unpaid'): Legacy field tracking overall subscription status
-  - `monthlyPayments` (object): Granular monthly tracking with states 'paid'|'partial'|'pending', keyed as 'YYYY-MM'
-- **Monthly UI**: "متابعة الاشتراكات" (yearly) tab displays month grid for selected city/year, allowing per-month status edits
-- **Status change pattern**: All payment updates require confirmation modal (`confirmStatusChange` state) before Firestore write
-- **Default state**: New customers default to `paymentStatus: 'unpaid'` with no monthlyPayments entries
+### Arabic UI Conventions
+- Month names: Use `MONTHS_AR` array for display
+- Date formatting: `formatDate()` uses `'ar-EG'` locale
+- RTL layout via CSS (direction handled in index.css)
 
-### Form Patterns
-- All form submissions use `preventDefault()` on FormEvent
-- Input values stored in individual `useState` hooks, then batch-written to Firestore on submit
-- Toast notifications (`toastMessage` state) auto-dismiss after 2.2s
-- **Additional routers**: Dynamic form inputs managed via `additionalRouterCount` state with array of router objects
-- **Password confirmation**: Destructive actions (delete customer/city, edit customer) require password re-auth via `EmailAuthProvider.credential()`
+### Firebase Operations Pattern
+```typescript
+// Write: Use setDoc with doc reference
+await setDoc(doc(db, 'customers', customerId), customerData);
+// Delete: Use deleteDoc
+await deleteDoc(doc(db, 'customers', customerId));
+// Real-time: Use onSnapshot in useEffect
+onSnapshot(collection(db, 'cities'), (snapshot) => { ... });
+```
 
-### Localization
-- **Arabic-first UI**: Date formatting uses `'ar-EG'` locale exclusively via `formatDate()` function
-- **Month array**: MONTHS_AR constant contains Arabic month names (يناير, فبراير, etc.)
-- All user-facing strings are in Arabic; error handling includes localized Firebase auth error codes
-- ISO date format (YYYY-MM-DD) used for internal date operations via `todayISO()` helper
-- Year/month pairs in monthlyPayments use ISO string format 'YYYY-MM'
+### Backend CORS Configuration
+Allowed origins in [backend/src/index.ts](backend/src/index.ts): Firebase Hosting domain + localhost ports
 
-### Invoice Generation
-- **Dynamic import**: `html2pdf.js` loaded on-demand in `generateInvoicePDF()`
-- **Template**: Inline HTML string with embedded CSS (Cairo font, RTL layout, A4 dimensions)
-- **Customer data**: Includes all fields, additional routers, and calculated setup fee balance
-- **Monthly summary**: Invoice tab shows filtered customers by city, with per-invoice PDF download
+## Deployment
 
-## TypeScript Setup
+- **Frontend**: `firebase deploy --only hosting` (builds from `frontend/dist/`)
+- **Backend**: Docker build → Cloud Run (see `backend/Dockerfile`)
+- **Environment**: Set `VITE_BACKEND_URL` for Cloud Run API endpoint
 
-- **Strict mode enabled**: No implicit any, strict null checks required
-- **JSX factory**: `react-jsx` (import React not required in .tsx files)
-- **Target**: ES2020 with dom libraries
-- **Linting**: `npm run lint` runs tsc type-checking only; no eslint configured
-
-## Critical Integration Points
-
-### Firebase Authentication Flow
-- `onAuthStateChanged` listener establishes session on app load (persists across refreshes)
-- Login errors mapped to Arabic messages (see `handleLogin` error codes)
-- All UI content gated behind `isAuthenticated` state - unauthenticated users see login screen only
-- `authLoading` state prevents flash of wrong UI during initial auth check
-
-### State Management Pattern
-- **No state management library**: All state in App.tsx via `useState` hooks
-- **Derived state**: Use `useMemo` for filtered lists (`filteredCustomers`, `invoiceFilteredCustomers`)
-- **Modal state**: Separate boolean flags (`showCustomerModal`, `showEditModal`, `confirmStatusChange`)
-- **Form state**: Each input field has its own state hook (not using form libraries)
-
-## When Extending This Codebase
-
-1. **Adding features**: App.tsx is now 1,390 lines; consider splitting into smaller components if adding major features
-2. **New Firestore fields**: Update TypeScript types first, then ensure write operations exclude undefined values
-3. **Date handling**: Use ISO format internally via `todayISO()`, format with `'ar-EG'` locale for display via `formatDate()`
-4. **Forms**: Follow existing pattern (state per input → build clean object → Firestore write → toast feedback)
-5. **Real-time updates**: Don't call `getDocs` manually - rely on `onSnapshot` listeners for automatic UI sync
-6. **Payment features**: Use `monthlyPayments` object for granular tracking; add confirmation modal for all status changes
-7. **Testing**: Manual (no test framework installed); verify Firebase writes and auth flow in browser
-8. **Security**: Modify `firestore.rules` when adding new collections or changing access patterns
-9. **Tab structure**: App has three main tabs: 'dashboard' (cities/customers), 'invoices' (PDF generation), 'yearly' (monthly payment tracking)
-10. **Modals**: Destructive actions should follow the confirm pattern with password re-auth (`EditPasswordModal`, `DeleteConfirm`)
-
-## Quick reference — where to start
-- **Key files**: `frontend/src/App.tsx` (main UI), `frontend/src/firebase.ts` (Firebase helpers/config), `frontend/README.md` (dev notes). There is a top-level `src/` that is sometimes used; prefer `frontend/src/` for UI changes.
-- **Useful grep targets**: `onSnapshot`, `setDoc(doc(db,`, `EmailAuthProvider.credential()`, `generateInvoicePDF()` (dynamic import example).
-
-## PR checklist for agents
-- Run `npm run lint` (TypeScript check) and `npm run build`.
-- Smoke-test core flows: sign-in, add/edit/delete city & customer, monthly payment toggles, and invoice PDF generation.
-- Ensure no `undefined` values are written to Firestore and update `firestore.rules` if you add new collections/fields.
-- Preserve RTL/Arabic UI and `ar-EG` date formatting for displayed dates.
+## Key Files Reference
+| File | Purpose |
+|------|---------|
+| [frontend/src/firebase.ts](frontend/src/firebase.ts) | Firebase config and exports |
+| [firestore.rules](firestore.rules) | Security rules (auth required for all ops) |
+| [firebase.json](firebase.json) | Hosting config, SPA rewrites |
