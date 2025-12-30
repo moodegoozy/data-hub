@@ -35,6 +35,7 @@ type Customer = {
   discountAmount?: number;
   isSuspended?: boolean;
   suspendedDate?: string;
+  isExempt?: boolean;
 };
 
 type Expense = {
@@ -89,7 +90,7 @@ function App() {
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik' | 'customers-db'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
@@ -195,6 +196,20 @@ function App() {
   const [financeMonth, setFinanceMonth] = useState(new Date().getMonth() + 1);
   const [financeYear, setFinanceYear] = useState(new Date().getFullYear());
   const [suspendSearch, setSuspendSearch] = useState('');
+  
+  // نظام حذف المصروفات والإيرادات مع كلمة المرور
+  const [financeDeleteConfirm, setFinanceDeleteConfirm] = useState<{type: 'expense' | 'income'; item: Expense | Income} | null>(null);
+  const [financeDeletePassword, setFinanceDeletePassword] = useState('');
+  const [financeDeleteLoading, setFinanceDeleteLoading] = useState(false);
+  
+  // نظام حذف الخصومات مع كلمة المرور
+  const [discountDeleteConfirm, setDiscountDeleteConfirm] = useState<Customer | null>(null);
+  const [discountDeletePassword, setDiscountDeletePassword] = useState('');
+  const [discountDeleteLoading, setDiscountDeleteLoading] = useState(false);
+  
+  // قاعدة العملاء - فلتر وبحث
+  const [customersDbCityId, setCustomersDbCityId] = useState<string | null>(null);
+  const [customersDbSearch, setCustomersDbSearch] = useState('');
 
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
@@ -237,10 +252,10 @@ function App() {
     const isFutureMonth = revenuesYear > currentYear || 
       (revenuesYear === currentYear && revenuesMonth > currentMonth);
 
-    // استثناء العملاء الموقوفين من الحسابات
+    // استثناء العملاء الموقوفين والمعفيين من الحسابات
     const cityCustomers = revenuesCityId
-      ? customers.filter((c) => c.cityId === revenuesCityId && c.subscriptionValue && !c.isSuspended)
-      : customers.filter((c) => c.subscriptionValue && !c.isSuspended);
+      ? customers.filter((c) => c.cityId === revenuesCityId && c.subscriptionValue && !c.isSuspended && !c.isExempt)
+      : customers.filter((c) => c.subscriptionValue && !c.isSuspended && !c.isExempt);
 
     const paid = cityCustomers.filter((c) => {
       if (isFutureMonth) return false;
@@ -267,23 +282,90 @@ function App() {
     return { paid, partial, pending, paidAmount, partialAmount, pendingAmount };
   }, [customers, revenuesCityId, revenuesYear, revenuesMonth]);
 
-  // دالة البحث عن العملاء
+  // دالة البحث الديناميكية حسب التبويب المفتوح
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const query = searchQuery.trim().toLowerCase();
-    return customers.filter((c) => 
+    
+    // البحث في العملاء حسب التبويب
+    let filteredList = customers;
+    
+    // تصفية حسب التبويب الحالي
+    switch (activeTab) {
+      case 'dashboard':
+        // في لوحة التحكم، البحث في المدينة المختارة
+        if (selectedCityId) {
+          filteredList = customers.filter(c => c.cityId === selectedCityId);
+        }
+        break;
+      case 'yearly':
+        // متابعة الاشتراكات - البحث في المدينة المختارة
+        if (yearlyCityId) {
+          filteredList = customers.filter(c => c.cityId === yearlyCityId);
+        }
+        break;
+      case 'invoices':
+        // الفواتير - البحث في المدينة المختارة
+        if (invoiceCityId) {
+          filteredList = customers.filter(c => c.cityId === invoiceCityId);
+        }
+        break;
+      case 'revenues':
+        // الإيرادات - البحث في المدينة المختارة
+        if (revenuesCityId) {
+          filteredList = customers.filter(c => c.cityId === revenuesCityId);
+        }
+        break;
+      case 'discounts':
+        // الخصومات - البحث في العملاء الذين لديهم خصم
+        filteredList = customers.filter(c => c.hasDiscount);
+        break;
+      case 'suspended':
+        // الموقوفين - البحث في العملاء الموقوفين
+        filteredList = customers.filter(c => c.isSuspended);
+        break;
+    }
+    
+    return filteredList.filter((c) => 
       c.name.toLowerCase().includes(query) || 
       (c.phone && c.phone.includes(query)) ||
       (c.userName && c.userName.toLowerCase().includes(query))
     );
-  }, [customers, searchQuery]);
+  }, [customers, searchQuery, activeTab, selectedCityId, yearlyCityId, invoiceCityId, revenuesCityId]);
 
-  // دالة الانتقال للعميل
+  // دالة الانتقال للعميل حسب التبويب
   const navigateToCustomer = (customer: Customer) => {
-    setSelectedCityId(customer.cityId);
-    setSelectedCustomer(customer);
-    setShowCustomerModal(true);
+    // تحديث المدينة المختارة حسب التبويب الحالي
+    switch (activeTab) {
+      case 'dashboard':
+        setSelectedCityId(customer.cityId);
+        setSelectedCustomer(customer);
+        setShowCustomerModal(true);
+        break;
+      case 'yearly':
+        setYearlyCityId(customer.cityId);
+        break;
+      case 'invoices':
+        setInvoiceCityId(customer.cityId);
+        break;
+      case 'revenues':
+        setRevenuesCityId(customer.cityId);
+        break;
+      case 'discounts':
+      case 'suspended':
+        // في هذه التبويبات، نفتح تفاصيل العميل
+        setSelectedCustomer(customer);
+        setShowCustomerModal(true);
+        break;
+      default:
+        setSelectedCityId(customer.cityId);
+        setSelectedCustomer(customer);
+        setShowCustomerModal(true);
+    }
+    
     setSearchQuery('');
+    
+    // تمرير للعميل
     setTimeout(() => {
       const element = document.getElementById(`customer-${customer.id}`);
       if (element) {
@@ -291,7 +373,7 @@ function App() {
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         setTimeout(() => element.classList.remove('highlight'), 2000);
       }
-    }, 0);
+    }, 100);
   };
 
   // دالة حساب عدد الأيام من تاريخ بدء الاشتراك
@@ -341,8 +423,9 @@ function App() {
     
     return customers.filter(c => {
       if (!c.startDate) return false;
-      // استثناء العملاء الموقوفين
+      // استثناء العملاء الموقوفين والمعفيين
       if (c.isSuspended) return false;
+      if (c.isExempt) return false;
       
       // إذا كان الشهر الحالي مدفوع، لا يظهر في الجدول
       const monthStatus = c.monthlyPayments?.[currentYearMonth];
@@ -414,13 +497,16 @@ function App() {
     }
   };
 
-  // دالة إزالة الخصم
-  const removeDiscount = async (customer: Customer) => {
+  // دالة إزالة الخصم (تطلب كلمة المرور)
+  const handleRemoveDiscount = (customer: Customer) => {
     if (!customer.hasDiscount || !customer.discountAmount) {
       setToastMessage('هذا العميل ليس لديه خصم');
       return;
     }
+    setDiscountDeleteConfirm(customer);
+  };
 
+  const executeRemoveDiscount = async (customer: Customer) => {
     const newValue = (customer.subscriptionValue || 0) + (customer.discountAmount || 0);
     
     try {
@@ -441,6 +527,41 @@ function App() {
     } catch (error) {
       setToastMessage('خطأ في إزالة الخصم');
       console.error(error);
+    }
+  };
+
+  const confirmDiscountDelete = async () => {
+    if (!discountDeleteConfirm || !discountDeletePassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+
+    setDiscountDeleteLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) {
+        setToastMessage('خطأ في المصادقة');
+        return;
+      }
+
+      // التحقق من كلمة المرور
+      const credential = EmailAuthProvider.credential(user.email, discountDeletePassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // تنفيذ إزالة الخصم
+      await executeRemoveDiscount(discountDeleteConfirm);
+
+      setDiscountDeleteConfirm(null);
+      setDiscountDeletePassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في التحقق');
+        console.error(error);
+      }
+    } finally {
+      setDiscountDeleteLoading(false);
     }
   };
 
@@ -510,8 +631,12 @@ function App() {
     }
   };
 
-  // دالة حذف مصروف
-  const deleteExpense = async (expense: Expense) => {
+  // دالة حذف مصروف (تطلب كلمة المرور)
+  const handleDeleteExpense = (expense: Expense) => {
+    setFinanceDeleteConfirm({ type: 'expense', item: expense });
+  };
+
+  const executeDeleteExpense = async (expense: Expense) => {
     try {
       await deleteDoc(doc(db, 'expenses', expense.id));
       setExpenses(expenses.filter(e => e.id !== expense.id));
@@ -564,7 +689,11 @@ function App() {
     }
   };
 
-  const deleteIncome = async (income: Income) => {
+  const handleDeleteIncome = (income: Income) => {
+    setFinanceDeleteConfirm({ type: 'income', item: income });
+  };
+
+  const executeDeleteIncome = async (income: Income) => {
     try {
       await deleteDoc(doc(db, 'incomes', income.id));
       setIncomes(incomes.filter(i => i.id !== income.id));
@@ -572,6 +701,46 @@ function App() {
     } catch (error) {
       setToastMessage('خطأ في حذف الإيراد');
       console.error(error);
+    }
+  };
+
+  // دالة تأكيد الحذف للمصروفات والإيرادات
+  const confirmFinanceDelete = async () => {
+    if (!financeDeleteConfirm || !financeDeletePassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+
+    setFinanceDeleteLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) {
+        setToastMessage('خطأ في المصادقة');
+        return;
+      }
+
+      // التحقق من كلمة المرور
+      const credential = EmailAuthProvider.credential(user.email, financeDeletePassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // تنفيذ الحذف
+      if (financeDeleteConfirm.type === 'expense') {
+        await executeDeleteExpense(financeDeleteConfirm.item as Expense);
+      } else {
+        await executeDeleteIncome(financeDeleteConfirm.item as Income);
+      }
+
+      setFinanceDeleteConfirm(null);
+      setFinanceDeletePassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في التحقق');
+        console.error(error);
+      }
+    } finally {
+      setFinanceDeleteLoading(false);
     }
   };
 
@@ -821,6 +990,18 @@ function App() {
       }
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  // دالة تبديل حالة الإعفاء
+  const toggleExemptStatus = async (customer: Customer) => {
+    try {
+      const newExemptStatus = !customer.isExempt;
+      await setDoc(doc(db, 'customers', customer.id), { isExempt: newExemptStatus }, { merge: true });
+      setToastMessage(newExemptStatus ? `تم إعفاء العميل: ${customer.name}` : `تم إلغاء إعفاء العميل: ${customer.name}`);
+    } catch (error) {
+      setToastMessage('خطأ في تحديث حالة الإعفاء');
+      console.error(error);
     }
   };
 
@@ -1390,10 +1571,19 @@ function App() {
         <div className="search-box">
           <input 
             type="text"
-            placeholder="ابحث عن عميل بالاسم أو الرقم..."
+            placeholder={
+              activeTab === 'expenses' || activeTab === 'microtik' 
+                ? 'البحث غير متاح في هذا التبويب'
+                : activeTab === 'discounts'
+                ? 'ابحث في العملاء بالخصم...'
+                : activeTab === 'suspended'
+                ? 'ابحث في العملاء الموقوفين...'
+                : 'ابحث عن عميل بالاسم أو الرقم...'
+            }
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="search-input"
+            disabled={activeTab === 'expenses' || activeTab === 'microtik'}
           />
           {searchQuery && searchResults.length > 0 && (
             <div className="search-results">
@@ -1412,12 +1602,20 @@ function App() {
               })}
             </div>
           )}
+          {searchQuery && searchResults.length === 0 && activeTab !== 'expenses' && activeTab !== 'microtik' && (
+            <div className="search-results">
+              <div className="search-result-item" style={{ color: '#6b7280', cursor: 'default' }}>
+                لا توجد نتائج في هذا التبويب
+              </div>
+            </div>
+          )}
         </div>
         <button onClick={handleLogout} className="btn secondary">تسجيل خروج</button>
       </header>
 
       <div className="tabs">
         <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>لوحة التحكم</button>
+        <button className={`tab-btn ${activeTab === 'customers-db' ? 'active' : ''}`} onClick={() => setActiveTab('customers-db')}>قاعدة العملاء</button>
         <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>الفواتير</button>
         <button className={`tab-btn ${activeTab === 'yearly' ? 'active' : ''}`} onClick={() => setActiveTab('yearly')}>متابعة الاشتراكات</button>
         <button className={`tab-btn ${activeTab === 'revenues' ? 'active' : ''}`} onClick={() => setActiveTab('revenues')}>الإيرادات</button>
@@ -2028,10 +2226,11 @@ function App() {
                   {filteredCustomers.map((customer) => {
                     const remaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
                     return (
-                    <div key={customer.id} id={`customer-${customer.id}`} className={`customer-card ${customer.isSuspended ? 'suspended' : ''}`}>
+                    <div key={customer.id} id={`customer-${customer.id}`} className={`customer-card ${customer.isSuspended ? 'suspended' : ''} ${customer.isExempt ? 'exempt' : ''}`}>
                       <div className="customer-header">
                         <strong>
                           {customer.isSuspended && <span className="suspended-badge">⛔</span>}
+                          {customer.isExempt && <span className="exempt-badge">🆓</span>}
                           {customer.hasDiscount && <span className="discount-badge">🏷️</span>}
                           {customer.name}
                         </strong>
@@ -2056,6 +2255,13 @@ function App() {
                           </button>
                         </div>
                         <div className="customer-actions-top">
+                          <button 
+                            onClick={() => toggleExemptStatus(customer)} 
+                            className={`btn btn-sm ${customer.isExempt ? 'success' : 'secondary'}`}
+                            title={customer.isExempt ? 'إلغاء الإعفاء' : 'إعفاء من الإيرادات'}
+                          >
+                            {customer.isExempt ? '🆓' : 'إعفاء'}
+                          </button>
                           <button onClick={() => openCustomerDetails(customer)} className="btn info btn-sm">معلومات</button>
                           <button onClick={() => openEditCustomer(customer)} className="btn edit btn-sm">تعديل</button>
                           <button onClick={() => openTransferCustomer(customer)} className="btn primary btn-sm">نقل</button>
@@ -2446,6 +2652,80 @@ function App() {
               <button onClick={() => { setDeleteConfirm(null); setDeletePassword(''); }} className="btn secondary">إلغاء</button>
               <button onClick={confirmDelete} className="btn danger" disabled={deleteLoading}>
                 {deleteLoading ? 'جاري التحقق...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Finance Delete Confirmation Modal (للمصروفات والإيرادات) */}
+      {financeDeleteConfirm && (
+        <div className="modal-overlay" onClick={() => { setFinanceDeleteConfirm(null); setFinanceDeletePassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد الحذف</h3>
+              <button onClick={() => { setFinanceDeleteConfirm(null); setFinanceDeletePassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                هل أنت متأكد من حذف {financeDeleteConfirm.type === 'expense' ? 'المصروف' : 'الإيراد'}{' '}
+                <strong className="text-danger">{financeDeleteConfirm.item.name}</strong>؟
+                <br />
+                <small>المبلغ: {financeDeleteConfirm.item.amount} ﷼</small>
+              </p>
+              <div className="edit-field">
+                <label>أدخل كلمة المرور للتأكيد</label>
+                <input 
+                  type="password" 
+                  placeholder="كلمة المرور" 
+                  value={financeDeletePassword} 
+                  onChange={(e) => setFinanceDeletePassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmFinanceDelete()}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setFinanceDeleteConfirm(null); setFinanceDeletePassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmFinanceDelete} className="btn danger" disabled={financeDeleteLoading}>
+                {financeDeleteLoading ? 'جاري التحقق...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Discount Delete Confirmation Modal (لإزالة الخصومات) */}
+      {discountDeleteConfirm && (
+        <div className="modal-overlay" onClick={() => { setDiscountDeleteConfirm(null); setDiscountDeletePassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد إزالة الخصم</h3>
+              <button onClick={() => { setDiscountDeleteConfirm(null); setDiscountDeletePassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                هل أنت متأكد من إزالة الخصم من العميل{' '}
+                <strong className="text-danger">{discountDeleteConfirm.name}</strong>؟
+                <br />
+                <small>قيمة الخصم: {discountDeleteConfirm.discountAmount || 0} ﷼</small>
+                <br />
+                <small>ستعود قيمة الاشتراك إلى: {(discountDeleteConfirm.subscriptionValue || 0) + (discountDeleteConfirm.discountAmount || 0)} ﷼</small>
+              </p>
+              <div className="edit-field">
+                <label>أدخل كلمة المرور للتأكيد</label>
+                <input 
+                  type="password" 
+                  placeholder="كلمة المرور" 
+                  value={discountDeletePassword} 
+                  onChange={(e) => setDiscountDeletePassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmDiscountDelete()}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setDiscountDeleteConfirm(null); setDiscountDeletePassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmDiscountDelete} className="btn danger" disabled={discountDeleteLoading}>
+                {discountDeleteLoading ? 'جاري التحقق...' : 'تأكيد إزالة الخصم'}
               </button>
             </div>
           </div>
@@ -2936,7 +3216,7 @@ function App() {
                           <td>{customer.subscriptionValue || 0} ﷼</td>
                           <td>
                             <button 
-                              onClick={() => removeDiscount(customer)} 
+                              onClick={() => handleRemoveDiscount(customer)} 
                               className="btn danger btn-sm"
                             >
                               إزالة الخصم
@@ -3124,7 +3404,7 @@ function App() {
                               <td>{formatDate(expense.date)}</td>
                               <td>
                                 <button 
-                                  onClick={() => deleteExpense(expense)} 
+                                  onClick={() => handleDeleteExpense(expense)} 
                                   className="btn danger btn-sm"
                                 >
                                   حذف
@@ -3166,7 +3446,7 @@ function App() {
                               <td>{formatDate(income.date)}</td>
                               <td>
                                 <button 
-                                  onClick={() => deleteIncome(income)} 
+                                  onClick={() => handleDeleteIncome(income)} 
                                   className="btn danger btn-sm"
                                 >
                                   حذف
@@ -3179,6 +3459,117 @@ function App() {
                   );
                 })()}
               </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'customers-db' && (
+          <div className="section customers-db-section">
+            <h2>📋 قاعدة العملاء</h2>
+            <p className="section-info">جميع بيانات العملاء في مكان واحد</p>
+            
+            {/* فلاتر */}
+            <div className="customers-db-filters">
+              <select 
+                value={customersDbCityId || ''} 
+                onChange={(e) => setCustomersDbCityId(e.target.value || null)} 
+                className="input"
+              >
+                <option value="">جميع المدن</option>
+                {cities.map((city) => <option key={city.id} value={city.id}>{city.name}</option>)}
+              </select>
+              
+              <input
+                type="text"
+                className="input customers-db-search"
+                placeholder="ابحث بالاسم أو الجوال أو اسم المستخدم أو IP..."
+                value={customersDbSearch}
+                onChange={(e) => setCustomersDbSearch(e.target.value)}
+              />
+              
+              <span className="customers-count">
+                إجمالي العملاء: {(() => {
+                  let filtered = customersDbCityId 
+                    ? customers.filter(c => c.cityId === customersDbCityId)
+                    : customers;
+                  if (customersDbSearch.trim()) {
+                    const query = customersDbSearch.trim().toLowerCase();
+                    filtered = filtered.filter(c => 
+                      c.name.toLowerCase().includes(query) ||
+                      (c.phone && c.phone.includes(query)) ||
+                      (c.userName && c.userName.toLowerCase().includes(query)) ||
+                      (c.ipNumber && c.ipNumber.includes(query))
+                    );
+                  }
+                  return filtered.length;
+                })()}
+              </span>
+            </div>
+
+            {/* جدول العملاء */}
+            <div className="customers-db-table-container">
+              <table className="customers-db-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>الاسم</th>
+                    <th>المدينة</th>
+                    <th>الجوال</th>
+                    <th>اسم المستخدم</th>
+                    <th>IP Number</th>
+                    <th>الاشتراك</th>
+                    <th>تاريخ البدء</th>
+                    <th>LAP</th>
+                    <th>الموقع</th>
+                    <th>الحالة</th>
+                    <th>ملاحظات</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    let filtered = customersDbCityId 
+                      ? customers.filter(c => c.cityId === customersDbCityId)
+                      : customers;
+                    if (customersDbSearch.trim()) {
+                      const query = customersDbSearch.trim().toLowerCase();
+                      filtered = filtered.filter(c => 
+                        c.name.toLowerCase().includes(query) ||
+                        (c.phone && c.phone.includes(query)) ||
+                        (c.userName && c.userName.toLowerCase().includes(query)) ||
+                        (c.ipNumber && c.ipNumber.includes(query))
+                      );
+                    }
+                    return filtered.map((customer, index) => {
+                      const city = cities.find(c => c.id === customer.cityId);
+                      return (
+                        <tr key={customer.id} className={`${customer.isSuspended ? 'row-suspended' : ''} ${customer.isExempt ? 'row-exempt' : ''}`}>
+                          <td>{index + 1}</td>
+                          <td>
+                            {customer.isSuspended && <span title="موقوف">⏸️</span>}
+                            {customer.isExempt && <span title="معفي">🆓</span>}
+                            {customer.hasDiscount && <span title="خصم">🏷️</span>}
+                            {customer.name}
+                          </td>
+                          <td>{city?.name || '-'}</td>
+                          <td>{customer.phone || '-'}</td>
+                          <td>{customer.userName || '-'}</td>
+                          <td>{customer.ipNumber || '-'}</td>
+                          <td>{customer.subscriptionValue || 0} ﷼</td>
+                          <td>{customer.startDate ? formatDate(customer.startDate) : '-'}</td>
+                          <td>{customer.lap || '-'}</td>
+                          <td>{customer.site || '-'}</td>
+                          <td>
+                            <span className={`status-badge ${customer.paymentStatus === 'paid' ? 'paid' : customer.paymentStatus === 'partial' ? 'partial' : 'unpaid'}`}>
+                              {customer.paymentStatus === 'paid' ? 'مدفوع' : customer.paymentStatus === 'partial' ? 'جزئي' : 'غير مسدد'}
+                            </span>
+                          </td>
+                          <td className="notes-cell">{customer.notes || '-'}</td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
