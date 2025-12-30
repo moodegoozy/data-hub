@@ -3915,7 +3915,7 @@ function App() {
                     <th>الاسم</th>
                     <th>المدينة</th>
                     <th>الجوال</th>
-                    <th>اسم المستخدم</th>
+                    <th>Username</th>
                     <th>IP Number</th>
                     <th>الاشتراك</th>
                     <th>تاريخ البدء</th>
