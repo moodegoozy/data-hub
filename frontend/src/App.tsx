@@ -842,7 +842,10 @@ function App() {
           <style>
             @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
             body { font-family: 'Cairo', sans-serif; padding: 20px; }
-            h1 { text-align: center; color: #1a1a2e; margin-bottom: 5px; }
+            .header { text-align: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #1a1a2e; }
+            .logo-container { display: flex; justify-content: center; align-items: center; gap: 15px; margin-bottom: 10px; }
+            .company-name { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+            h1 { text-align: center; color: #1a1a2e; margin-bottom: 5px; margin-top: 0; }
             .subtitle { text-align: center; color: #666; margin-bottom: 20px; }
             table { width: 100%; border-collapse: collapse; font-size: 11px; }
             th, td { border: 1px solid #ddd; padding: 6px 4px; text-align: center; }
@@ -855,7 +858,16 @@ function App() {
           </style>
         </head>
         <body>
-          <h1>📋 قاعدة العملاء</h1>
+          <div class="header">
+            <div class="logo-container">
+              <svg width="50" height="35" viewBox="0 0 56 28" fill="none">
+                <polygon points="4,4 4,24 18,14" fill="#1e40af" />
+                <polygon points="20,4 20,24 34,14" fill="#60a5fa" />
+              </svg>
+              <span class="company-name">DATA HUB</span>
+            </div>
+            <h1>📋 قاعدة العملاء</h1>
+          </div>
           <p class="subtitle">${selectedCityName} - إجمالي: ${filtered.length} عميل</p>
           <table>
             <thead>
