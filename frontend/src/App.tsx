@@ -842,10 +842,10 @@ function App() {
           <style>
             @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
             body { font-family: 'Cairo', sans-serif; padding: 20px; }
-            .header { text-align: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #1e40af; }
-            .logo-container { display: flex; justify-content: center; align-items: center; gap: 10px; margin-bottom: 10px; }
-            .company-name { font-size: 24px; font-weight: 700; color: #1e3a5f; }
-            .arrows { display: flex; align-items: center; }
+            .header { text-align: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #e5e7eb; }
+            .logo-container { display: flex; justify-content: center; align-items: center; gap: 8px; margin-bottom: 10px; }
+            .company-name { font-size: 26px; font-weight: 700; color: #1e40af; letter-spacing: 1px; }
+            .arrows { font-size: 22px; color: #60a5fa; font-weight: bold; }
             h1 { text-align: center; color: #1a1a2e; margin-bottom: 5px; margin-top: 0; }
             .subtitle { text-align: center; color: #666; margin-bottom: 20px; }
             table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -862,12 +862,7 @@ function App() {
           <div class="header">
             <div class="logo-container">
               <span class="company-name">DATA HUB</span>
-              <span class="arrows">
-                <svg width="30" height="20" viewBox="0 0 30 20" fill="none">
-                  <polygon points="0,0 0,20 12,10" fill="#3b82f6" />
-                  <polygon points="12,0 12,20 24,10" fill="#60a5fa" />
-                </svg>
-              </span>
+              <span class="arrows">▶▶</span>
             </div>
             <h1>📋 قاعدة العملاء</h1>
           </div>
