@@ -860,7 +860,7 @@ function App() {
         </head>
         <body>
           <div class="header">
-            <div class="logo-container">
+            <div class="logo-container" style="direction: ltr;">
               <span class="company-name">DATA HUB</span>
               <span class="arrows">▶▶</span>
             </div>
