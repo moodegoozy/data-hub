@@ -183,6 +183,7 @@ function App() {
   const [showPendingRevenues, setShowPendingRevenues] = useState(false);
   const [showPaidRevenues, setShowPaidRevenues] = useState(false);
   const [showPartialRevenues, setShowPartialRevenues] = useState(false);
+  const [showExemptList, setShowExemptList] = useState(false);
   const [expenseDescription, setExpenseDescription] = useState('');
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseDate, setExpenseDate] = useState(todayISO());
@@ -210,6 +211,18 @@ function App() {
   // قاعدة العملاء - فلتر وبحث
   const [customersDbCityId, setCustomersDbCityId] = useState<string | null>(null);
   const [customersDbSearch, setCustomersDbSearch] = useState('');
+  
+  // تعديل المصروفات والإيرادات
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editingIncome, setEditingIncome] = useState<Income | null>(null);
+  const [showEditExpenseModal, setShowEditExpenseModal] = useState(false);
+  const [showEditIncomeModal, setShowEditIncomeModal] = useState(false);
+  
+  // تأكيد تعديل المصروفات/الإيرادات بكلمة مرور
+  const [pendingEditExpense, setPendingEditExpense] = useState<Expense | null>(null);
+  const [pendingEditIncome, setPendingEditIncome] = useState<Income | null>(null);
+  const [editFinancePassword, setEditFinancePassword] = useState('');
+  const [editFinanceLoading, setEditFinanceLoading] = useState(false);
 
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
@@ -647,6 +660,28 @@ function App() {
     }
   };
 
+  // دالة تعديل مصروف
+  const saveEditedExpense = async () => {
+    if (!editingExpense) return;
+    
+    try {
+      const date = new Date(editingExpense.date);
+      const updatedExpense = {
+        ...editingExpense,
+        month: date.getMonth() + 1,
+        year: date.getFullYear(),
+      };
+      
+      await setDoc(doc(db, 'expenses', editingExpense.id), updatedExpense);
+      setToastMessage(`تم تعديل المصروف: ${editingExpense.name}`);
+      setShowEditExpenseModal(false);
+      setEditingExpense(null);
+    } catch (error) {
+      setToastMessage('خطأ في تعديل المصروف');
+      console.error(error);
+    }
+  };
+
   // دوال الإيرادات اليدوية
   const addIncome = async () => {
     if (!incomeName.trim()) {
@@ -702,6 +737,157 @@ function App() {
       setToastMessage('خطأ في حذف الإيراد');
       console.error(error);
     }
+  };
+
+  // دالة تعديل إيراد
+  const saveEditedIncome = async () => {
+    if (!editingIncome) return;
+    
+    try {
+      const date = new Date(editingIncome.date);
+      const updatedIncome = {
+        ...editingIncome,
+        month: date.getMonth() + 1,
+        year: date.getFullYear(),
+      };
+      
+      await setDoc(doc(db, 'incomes', editingIncome.id), updatedIncome);
+      setToastMessage(`تم تعديل الإيراد: ${editingIncome.name}`);
+      setShowEditIncomeModal(false);
+      setEditingIncome(null);
+    } catch (error) {
+      setToastMessage('خطأ في تعديل الإيراد');
+      console.error(error);
+    }
+  };
+
+  // دالة تأكيد تعديل المصروفات/الإيرادات مع كلمة المرور
+  const confirmEditFinance = async () => {
+    if ((!pendingEditExpense && !pendingEditIncome) || !editFinancePassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+
+    setEditFinanceLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) {
+        setToastMessage('خطأ في المصادقة');
+        setEditFinanceLoading(false);
+        return;
+      }
+
+      const credential = EmailAuthProvider.credential(user.email, editFinancePassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // فتح modal التعديل
+      if (pendingEditExpense) {
+        setEditingExpense(pendingEditExpense);
+        setShowEditExpenseModal(true);
+        setPendingEditExpense(null);
+      } else if (pendingEditIncome) {
+        setEditingIncome(pendingEditIncome);
+        setShowEditIncomeModal(true);
+        setPendingEditIncome(null);
+      }
+      setEditFinancePassword('');
+    } catch {
+      setToastMessage('كلمة المرور غير صحيحة');
+    } finally {
+      setEditFinanceLoading(false);
+    }
+  };
+
+  // دالة طباعة قاعدة العملاء PDF
+  const printCustomersDbPdf = async () => {
+    const html2pdf = (await import('html2pdf.js')).default;
+    
+    let filtered = customersDbCityId 
+      ? customers.filter(c => c.cityId === customersDbCityId)
+      : customers;
+    if (customersDbSearch.trim()) {
+      const query = customersDbSearch.trim().toLowerCase();
+      filtered = filtered.filter(c => 
+        c.name.toLowerCase().includes(query) ||
+        (c.phone && c.phone.includes(query)) ||
+        (c.userName && c.userName.toLowerCase().includes(query)) ||
+        (c.ipNumber && c.ipNumber.includes(query))
+      );
+    }
+
+    const selectedCityName = customersDbCityId 
+      ? cities.find(c => c.id === customersDbCityId)?.name || 'جميع المدن'
+      : 'جميع المدن';
+
+    const tableRows = filtered.map((customer, index) => {
+      const city = cities.find(c => c.id === customer.cityId);
+      const statusText = customer.paymentStatus === 'paid' ? 'مدفوع' : customer.paymentStatus === 'partial' ? 'جزئي' : 'غير مسدد';
+      return `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${customer.name}</td>
+          <td>${city?.name || '-'}</td>
+          <td>${customer.phone || '-'}</td>
+          <td>${customer.userName || '-'}</td>
+          <td>${customer.ipNumber || '-'}</td>
+          <td>${customer.subscriptionValue || 0} ﷼</td>
+          <td>${statusText}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const pdfHTML = `
+      <html dir="rtl">
+        <head>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
+            body { font-family: 'Cairo', sans-serif; padding: 20px; }
+            h1 { text-align: center; color: #1a1a2e; margin-bottom: 5px; }
+            .subtitle { text-align: center; color: #666; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; }
+            th, td { border: 1px solid #ddd; padding: 6px 4px; text-align: center; }
+            th { background-color: #1a1a2e; color: white; }
+            tr:nth-child(even) { background-color: #f8f9fa; }
+            tr { page-break-inside: avoid; break-inside: avoid; }
+            thead { display: table-header-group; }
+            tbody { display: table-row-group; }
+            .footer { text-align: center; margin-top: 20px; color: #888; font-size: 10px; }
+          </style>
+        </head>
+        <body>
+          <h1>📋 قاعدة العملاء</h1>
+          <p class="subtitle">${selectedCityName} - إجمالي: ${filtered.length} عميل</p>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>الاسم</th>
+                <th>المدينة</th>
+                <th>الجوال</th>
+                <th>Username</th>
+                <th>IP</th>
+                <th>الاشتراك</th>
+                <th>الحالة</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+          <p class="footer">تم الطباعة بتاريخ: ${new Date().toLocaleDateString('ar-EG')}</p>
+        </body>
+      </html>
+    `;
+
+    const options = {
+      margin: 10,
+      filename: `قاعدة_العملاء_${selectedCityName}_${new Date().toISOString().split('T')[0]}.pdf`,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'landscape' as const }
+    };
+
+    html2pdf().set(options).from(pdfHTML).save();
   };
 
   // دالة تأكيد الحذف للمصروفات والإيرادات
@@ -2732,6 +2918,140 @@ function App() {
         </div>
       )}
 
+      {/* Edit Expense Modal (تعديل المصروفات) */}
+      {showEditExpenseModal && editingExpense && (
+        <div className="modal-overlay" onClick={() => { setShowEditExpenseModal(false); setEditingExpense(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تعديل المصروف</h3>
+              <button onClick={() => { setShowEditExpenseModal(false); setEditingExpense(null); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <div className="edit-field">
+                <label>اسم المصروف</label>
+                <input 
+                  type="text" 
+                  value={editingExpense.name} 
+                  onChange={(e) => setEditingExpense({ ...editingExpense, name: e.target.value })}
+                />
+              </div>
+              <div className="edit-field">
+                <label>الوصف</label>
+                <input 
+                  type="text" 
+                  value={editingExpense.description || ''} 
+                  onChange={(e) => setEditingExpense({ ...editingExpense, description: e.target.value })}
+                />
+              </div>
+              <div className="edit-field">
+                <label>المبلغ</label>
+                <input 
+                  type="number" 
+                  value={editingExpense.amount} 
+                  onChange={(e) => setEditingExpense({ ...editingExpense, amount: Number(e.target.value) })}
+                />
+              </div>
+              <div className="edit-field">
+                <label>التاريخ</label>
+                <input 
+                  type="date" 
+                  value={editingExpense.date} 
+                  onChange={(e) => setEditingExpense({ ...editingExpense, date: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setShowEditExpenseModal(false); setEditingExpense(null); }} className="btn secondary">إلغاء</button>
+              <button onClick={saveEditedExpense} className="btn primary">حفظ التعديلات</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Income Modal (تعديل الإيرادات) */}
+      {showEditIncomeModal && editingIncome && (
+        <div className="modal-overlay" onClick={() => { setShowEditIncomeModal(false); setEditingIncome(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تعديل الإيراد</h3>
+              <button onClick={() => { setShowEditIncomeModal(false); setEditingIncome(null); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <div className="edit-field">
+                <label>اسم الإيراد</label>
+                <input 
+                  type="text" 
+                  value={editingIncome.name} 
+                  onChange={(e) => setEditingIncome({ ...editingIncome, name: e.target.value })}
+                />
+              </div>
+              <div className="edit-field">
+                <label>الوصف</label>
+                <input 
+                  type="text" 
+                  value={editingIncome.description || ''} 
+                  onChange={(e) => setEditingIncome({ ...editingIncome, description: e.target.value })}
+                />
+              </div>
+              <div className="edit-field">
+                <label>المبلغ</label>
+                <input 
+                  type="number" 
+                  value={editingIncome.amount} 
+                  onChange={(e) => setEditingIncome({ ...editingIncome, amount: Number(e.target.value) })}
+                />
+              </div>
+              <div className="edit-field">
+                <label>التاريخ</label>
+                <input 
+                  type="date" 
+                  value={editingIncome.date} 
+                  onChange={(e) => setEditingIncome({ ...editingIncome, date: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setShowEditIncomeModal(false); setEditingIncome(null); }} className="btn secondary">إلغاء</button>
+              <button onClick={saveEditedIncome} className="btn primary">حفظ التعديلات</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Finance Password Modal (تأكيد تعديل المصروفات/الإيرادات) */}
+      {(pendingEditExpense || pendingEditIncome) && (
+        <div className="modal-overlay" onClick={() => { setPendingEditExpense(null); setPendingEditIncome(null); setEditFinancePassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد التعديل</h3>
+              <button onClick={() => { setPendingEditExpense(null); setPendingEditIncome(null); setEditFinancePassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                لتعديل {pendingEditExpense ? 'المصروف' : 'الإيراد'}{' '}
+                <strong>{pendingEditExpense?.name || pendingEditIncome?.name}</strong>، أدخل كلمة المرور
+              </p>
+              <div className="edit-field">
+                <label>كلمة المرور</label>
+                <input 
+                  type="password" 
+                  placeholder="كلمة المرور" 
+                  value={editFinancePassword} 
+                  onChange={(e) => setEditFinancePassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmEditFinance()}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setPendingEditExpense(null); setPendingEditIncome(null); setEditFinancePassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmEditFinance} className="btn primary" disabled={editFinanceLoading}>
+                {editFinanceLoading ? 'جاري التحقق...' : 'تأكيد'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Password Confirmation Modal */}
       {editPasswordModal && pendingEditCustomer && (
         <div className="modal-overlay" onClick={() => { setEditPasswordModal(false); setPendingEditCustomer(null); setEditPassword(''); }}>
@@ -2908,7 +3228,69 @@ function App() {
         {activeTab === 'revenues' && (
           <div className="section revenues-section">
             <div className="revenues-header">
-              <h2>الإيرادات الشهرية</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '15px', flexWrap: 'wrap' }}>
+                <h2>الإيرادات الشهرية</h2>
+                {/* قائمة المعفيين */}
+                {(() => {
+                  const exemptCustomers = customers.filter(c => c.isExempt && !c.isSuspended && (revenuesCityId ? c.cityId === revenuesCityId : true));
+                  return exemptCustomers.length > 0 ? (
+                    <div style={{ position: 'relative' }}>
+                      <button 
+                        onClick={() => setShowExemptList(!showExemptList)} 
+                        className="btn" 
+                        style={{ 
+                          background: '#9c27b0', 
+                          color: 'white', 
+                          padding: '6px 12px', 
+                          borderRadius: '20px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          fontSize: '13px'
+                        }}
+                      >
+                        🆓 المعفيين ({exemptCustomers.length})
+                        <span style={{ transform: showExemptList ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.3s' }}>▼</span>
+                      </button>
+                      {showExemptList && (
+                        <div style={{
+                          position: 'absolute',
+                          top: '100%',
+                          right: 0,
+                          marginTop: '5px',
+                          background: 'white',
+                          borderRadius: '10px',
+                          boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                          padding: '10px 0',
+                          minWidth: '250px',
+                          maxHeight: '300px',
+                          overflowY: 'auto',
+                          zIndex: 100
+                        }}>
+                          <div style={{ padding: '8px 15px', borderBottom: '1px solid #eee', fontWeight: 'bold', color: '#9c27b0' }}>
+                            العملاء المعفيين من الإيرادات
+                          </div>
+                          {exemptCustomers.map(customer => {
+                            const city = cities.find(c => c.id === customer.cityId);
+                            return (
+                              <div key={customer.id} style={{ 
+                                padding: '8px 15px', 
+                                borderBottom: '1px solid #f5f5f5',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center'
+                              }}>
+                                <span>{customer.name}</span>
+                                <span style={{ fontSize: '11px', color: '#888' }}>{city?.name || ''}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : null;
+                })()}
+              </div>
               <div className="revenues-controls">
                 <select value={revenuesCityId || ''} onChange={(e) => setRevenuesCityId(e.target.value || null)}>
                   <option value="">جميع المدن</option>
@@ -3404,6 +3786,13 @@ function App() {
                               <td>{formatDate(expense.date)}</td>
                               <td>
                                 <button 
+                                  onClick={() => { setPendingEditExpense(expense); setEditFinancePassword(''); }} 
+                                  className="btn edit btn-sm"
+                                  style={{ marginLeft: '5px' }}
+                                >
+                                  تعديل
+                                </button>
+                                <button 
                                   onClick={() => handleDeleteExpense(expense)} 
                                   className="btn danger btn-sm"
                                 >
@@ -3445,6 +3834,13 @@ function App() {
                               <td className="income-amount">{income.amount} ﷼</td>
                               <td>{formatDate(income.date)}</td>
                               <td>
+                                <button 
+                                  onClick={() => { setPendingEditIncome(income); setEditFinancePassword(''); }} 
+                                  className="btn edit btn-sm"
+                                  style={{ marginLeft: '5px' }}
+                                >
+                                  تعديل
+                                </button>
                                 <button 
                                   onClick={() => handleDeleteIncome(income)} 
                                   className="btn danger btn-sm"
@@ -3504,6 +3900,10 @@ function App() {
                   return filtered.length;
                 })()}
               </span>
+
+              <button onClick={printCustomersDbPdf} className="btn primary">
+                🖨️ طباعة PDF
+              </button>
             </div>
 
             {/* جدول العملاء */}
