@@ -31,6 +31,7 @@ type Customer = {
   notes?: string;
   paymentStatus?: 'paid' | 'unpaid' | 'partial';
   monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
+  monthlyPartialAmounts?: { [yearMonth: string]: number };
   hasDiscount?: boolean;
   discountAmount?: number;
   isSuspended?: boolean;
@@ -56,6 +57,17 @@ type Income = {
   date: string;
   month: number;
   year: number;
+};
+
+type Card = {
+  id: string;
+  cardNumber: string;
+  package: string;
+  value: number;
+  date: string;
+  month: number;
+  year: number;
+  note?: string;
 };
 
 const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
@@ -90,7 +102,7 @@ function App() {
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik' | 'customers-db'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik' | 'customers-db' | 'cards'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
@@ -104,6 +116,9 @@ function App() {
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid' | 'partial'; yearMonth?: string} | null>(null);
   const [partialPaymentAmount, setPartialPaymentAmount] = useState('');
+  const [paymentMonth, setPaymentMonth] = useState(new Date().getMonth() + 1);
+  const [paymentYear, setPaymentYear] = useState(new Date().getFullYear());
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('datahub-theme') === 'dark');
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{type: 'city' | 'customer'; id: string; name: string} | null>(null);
@@ -197,6 +212,7 @@ function App() {
   const [financeMonth, setFinanceMonth] = useState(new Date().getMonth() + 1);
   const [financeYear, setFinanceYear] = useState(new Date().getFullYear());
   const [suspendSearch, setSuspendSearch] = useState('');
+  const [yearlySearch, setYearlySearch] = useState('');
   
   // نظام حذف المصروفات والإيرادات مع كلمة المرور
   const [financeDeleteConfirm, setFinanceDeleteConfirm] = useState<{type: 'expense' | 'income'; item: Expense | Income} | null>(null);
@@ -224,6 +240,24 @@ function App() {
   const [editFinancePassword, setEditFinancePassword] = useState('');
   const [editFinanceLoading, setEditFinanceLoading] = useState(false);
 
+  // نظام البطاقات
+  const [cards, setCards] = useState<Card[]>([]);
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardPackage, setCardPackage] = useState('');
+  const [cardValue, setCardValue] = useState('');
+  const [cardDate, setCardDate] = useState(todayISO());
+  const [cardNote, setCardNote] = useState('');
+  const [cardsMonth, setCardsMonth] = useState(new Date().getMonth() + 1);
+  const [cardsYear, setCardsYear] = useState(new Date().getFullYear());
+  const [cardDeleteConfirm, setCardDeleteConfirm] = useState<Card | null>(null);
+  const [cardDeletePassword, setCardDeletePassword] = useState('');
+  const [cardDeleteLoading, setCardDeleteLoading] = useState(false);
+  const [showAddCardForm, setShowAddCardForm] = useState(false);
+  const [cardSearch, setCardSearch] = useState('');
+  const [showReportFilters, setShowReportFilters] = useState(false);
+  const [reportMonth, setReportMonth] = useState(0); // 0 = الكل
+  const [reportYear, setReportYear] = useState(new Date().getFullYear());
+  const [reportPackage, setReportPackage] = useState(''); // '' = الكل
   const selectedCity = useMemo(
     () => cities.find((city) => city.id === selectedCityId) ?? null,
     [cities, selectedCityId]
@@ -356,8 +390,16 @@ function App() {
         setShowCustomerModal(true);
         break;
       case 'yearly':
-        setYearlyCityId(customer.cityId);
-        break;
+        setYearlyCityId(null);
+        setTimeout(() => {
+          const element = document.getElementById(`customer-${customer.id}`);
+          if (element) {
+            element.classList.add('highlight');
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => element.classList.remove('highlight'), 2000);
+          }
+        }, 100);
+        return;
       case 'invoices':
         setInvoiceCityId(customer.cityId);
         break;
@@ -798,6 +840,254 @@ function App() {
     }
   };
 
+  // === نظام البطاقات ===
+  const addCard = async () => {
+    if (!cardNumber.trim()) { setToastMessage('أدخل رقم البطاقة'); return; }
+    if (!cardPackage.trim()) { setToastMessage('أدخل الباقة'); return; }
+    if (!cardValue || parseFloat(cardValue) <= 0) { setToastMessage('أدخل قيمة البطاقة'); return; }
+
+    try {
+      const date = new Date(cardDate);
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const cardData: Record<string, unknown> = {
+        id,
+        cardNumber: cardNumber.trim(),
+        package: cardPackage.trim(),
+        value: parseFloat(cardValue),
+        date: cardDate,
+        month: date.getMonth() + 1,
+        year: date.getFullYear(),
+      };
+      if (cardNote.trim()) cardData.note = cardNote.trim();
+
+      await setDoc(doc(db, 'cards', id), cardData);
+      setCardNumber(''); setCardPackage(''); setCardValue(''); setCardDate(todayISO()); setCardNote('');
+      setShowAddCardForm(false);
+      setToastMessage(`تم إضافة البطاقة: ${cardNumber.trim()}`);
+    } catch {
+      setToastMessage('خطأ في إضافة البطاقة');
+    }
+  };
+
+  const confirmDeleteCard = async () => {
+    if (!cardDeleteConfirm || !cardDeletePassword.trim()) { setToastMessage('أدخل كلمة المرور'); return; }
+    setCardDeleteLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
+      const credential = EmailAuthProvider.credential(user.email, cardDeletePassword);
+      await reauthenticateWithCredential(user, credential);
+      await deleteDoc(doc(db, 'cards', cardDeleteConfirm.id));
+      setCards(cards.filter(c => c.id !== cardDeleteConfirm.id));
+      setToastMessage(`تم حذف البطاقة: ${cardDeleteConfirm.cardNumber}`);
+      setCardDeleteConfirm(null); setCardDeletePassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else { setToastMessage('خطأ في التحقق'); }
+    } finally { setCardDeleteLoading(false); }
+  };
+
+  // دالة طباعة تقرير البطاقات PDF مع فلاتر
+  const printCardsReportPdf = async () => {
+    const html2pdf = (await import('html2pdf.js')).default;
+    
+    let reportCards = reportMonth === 0
+      ? cards.filter(c => c.year === reportYear)
+      : cards.filter(c => c.month === reportMonth && c.year === reportYear);
+    
+    if (reportPackage) {
+      reportCards = reportCards.filter(c => c.package === reportPackage);
+    }
+    
+    if (reportCards.length === 0) { setToastMessage('لا توجد بطاقات بهذا الفلتر'); return; }
+    
+    const sortedCards = [...reportCards].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const totalRevenue = reportCards.reduce((sum, c) => sum + c.value, 0);
+    const uniquePackages = [...new Set(reportCards.map(c => c.package))];
+    const packageStats = uniquePackages.map(pkg => {
+      const pkgCards = reportCards.filter(c => c.package === pkg);
+      return { name: pkg, count: pkgCards.length, total: pkgCards.reduce((s, c) => s + c.value, 0) };
+    }).sort((a, b) => b.total - a.total);
+
+    const periodLabel = reportMonth === 0 ? `سنة ${reportYear}` : `${MONTHS_AR[reportMonth - 1]} ${reportYear}`;
+    const monthName = reportMonth === 0 ? `سنة_${reportYear}` : MONTHS_AR[reportMonth - 1];
+    const logoUrl = window.location.origin + '/logo.png';
+    
+    const pdfHTML = `
+      <html dir="rtl">
+      <head>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: 'Cairo', sans-serif; direction: rtl; background: #fff; color: #334155; padding: 20px 28px; }
+          
+          .report-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 20px; margin-bottom: 18px;
+            background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+          }
+          .header-right { display: flex; align-items: center; gap: 12px; }
+          .report-logo { height: 40px; }
+          .header-text {}
+          .report-title { font-size: 16px; font-weight: 800; color: #1e293b; line-height: 1.3; }
+          .report-subtitle { font-size: 11px; color: #94a3b8; font-weight: 600; }
+          .report-period { 
+            background: #eef2ff; color: #4f46e5; padding: 5px 16px; 
+            border-radius: 8px; font-size: 13px; font-weight: 700; 
+          }
+          
+          .summary-row { 
+            display: flex; gap: 10px; margin-bottom: 16px; 
+          }
+          .summary-item {
+            flex: 1; text-align: center; padding: 10px 8px;
+            border: 1px solid #e2e8f0; border-radius: 8px; background: #fff;
+          }
+          .summary-value { font-size: 18px; font-weight: 800; color: #1e293b; }
+          .summary-value.green { color: #059669; }
+          .summary-label { font-size: 10px; color: #94a3b8; font-weight: 600; margin-top: 2px; }
+          
+          .section-title { font-size: 13px; font-weight: 700; color: #475569; margin-bottom: 8px; border-bottom: 2px solid #e2e8f0; padding-bottom: 4px; }
+          
+          .pkg-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+          .pkg-chip {
+            padding: 6px 14px; background: #f0fdf4; border: 1px solid #bbf7d0;
+            border-radius: 6px; font-size: 11px; text-align: center;
+          }
+          .pkg-chip-name { font-weight: 700; color: #166534; }
+          .pkg-chip-info { color: #64748b; font-size: 10px; }
+          
+          table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+          thead { background: #f1f5f9; }
+          th { 
+            padding: 8px 10px; font-size: 11px; font-weight: 700; color: #475569; 
+            text-align: center; border: 1px solid #e2e8f0; 
+          }
+          td { 
+            padding: 7px 10px; text-align: center; font-size: 12px; 
+            border: 1px solid #e2e8f0; color: #334155;
+          }
+          tbody tr:nth-child(even) { background: #f8fafc; }
+          .td-num { color: #94a3b8; font-size: 10px; }
+          .td-card { font-family: 'Courier New', monospace; font-weight: 700; font-size: 12px; }
+          .td-pkg { color: #4f46e5; font-weight: 700; font-size: 11px; }
+          .td-value { font-weight: 800; color: #059669; }
+          .td-note { color: #94a3b8; font-size: 11px; }
+          
+          tfoot td { 
+            background: #f1f5f9; font-weight: 800; 
+            border: 1px solid #e2e8f0; padding: 9px 10px; 
+          }
+          .total-label { color: #475569; font-size: 12px; }
+          .total-value { color: #059669; font-size: 15px; font-weight: 800; }
+          
+          .report-footer {
+            text-align: center; padding: 10px 0; margin-top: 8px;
+            border-top: 1px solid #e2e8f0; color: #cbd5e1; font-size: 9px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="report-header">
+          <div class="header-right">
+            <img src="${logoUrl}" class="report-logo" crossorigin="anonymous" />
+            <div class="header-text">
+              <div class="report-title">تقرير مبيعات البطاقات</div>
+              <div class="report-subtitle">Servox Cards Report</div>
+            </div>
+          </div>
+          <div class="report-period">${periodLabel}${reportPackage ? ` — ${reportPackage}` : ''}</div>
+        </div>
+        
+        <div class="summary-row">
+          <div class="summary-item">
+            <div class="summary-value">${reportCards.length}</div>
+            <div class="summary-label">عدد البطاقات</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-value green">${totalRevenue.toLocaleString()} ﷼</div>
+            <div class="summary-label">إجمالي الإيرادات</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-value">${uniquePackages.length}</div>
+            <div class="summary-label">عدد الباقات</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-value green">${reportCards.length > 0 ? Math.round(totalRevenue / reportCards.length).toLocaleString() : 0} ﷼</div>
+            <div class="summary-label">متوسط القيمة</div>
+          </div>
+        </div>
+
+        ${packageStats.length > 0 ? `
+        <div class="section-title">إيرادات حسب الباقة</div>
+        <div class="pkg-row">
+          ${packageStats.map(pkg => `
+            <div class="pkg-chip">
+              <div class="pkg-chip-name">${pkg.name}</div>
+              <div class="pkg-chip-info">${pkg.count} بطاقة — ${pkg.total.toLocaleString()} ﷼</div>
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+        
+        <div class="section-title">سجل البطاقات المباعة</div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>رقم البطاقة</th>
+                <th>الباقة</th>
+                <th>القيمة</th>
+                <th>التاريخ</th>
+                <th>ملاحظة</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sortedCards.map((card, idx) => `
+                <tr>
+                  <td class="td-num">${idx + 1}</td>
+                  <td class="td-card">${card.cardNumber}</td>
+                  <td><span class="td-pkg">${card.package}</span></td>
+                  <td class="td-value">${card.value.toLocaleString()} ﷼</td>
+                  <td>${formatDate(card.date)}</td>
+                  <td class="td-note">${card.note || '—'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3" class="total-label">الإجمالي</td>
+                <td class="total-value">${totalRevenue.toLocaleString()} ﷼</td>
+                <td colspan="2"></td>
+              </tr>
+            </tfoot>
+          </table>
+        
+        <div class="report-footer">
+          Servox — ${new Date().toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' })}
+        </div>
+      </body>
+      </html>
+    `;
+    
+    const options = {
+      margin: [8, 4, 8, 4],
+      filename: `تقرير_البطاقات_${monthName}_${reportYear}${reportPackage ? '_' + reportPackage : ''}.pdf`,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const }
+    };
+    
+    // إزالة الثيم الداكن مؤقتاً أثناء إنشاء PDF
+    const savedTheme = document.documentElement.getAttribute('data-theme');
+    if (savedTheme === 'dark') document.documentElement.removeAttribute('data-theme');
+    html2pdf().set(options).from(pdfHTML).save();
+    if (savedTheme === 'dark') setTimeout(() => document.documentElement.setAttribute('data-theme', 'dark'), 500);
+    setToastMessage('جاري تحميل التقرير...');
+    setShowReportFilters(false);
+  };
+
   // دالة طباعة قاعدة العملاء PDF
   const printCustomersDbPdf = async () => {
     const html2pdf = (await import('html2pdf.js')).default;
@@ -897,7 +1187,11 @@ function App() {
       jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'landscape' as const }
     };
 
+    // إزالة الثيم الداكن مؤقتاً أثناء إنشاء PDF
+    const savedTheme2 = document.documentElement.getAttribute('data-theme');
+    if (savedTheme2 === 'dark') document.documentElement.removeAttribute('data-theme');
     html2pdf().set(options).from(pdfHTML).save();
+    if (savedTheme2 === 'dark') setTimeout(() => document.documentElement.setAttribute('data-theme', 'dark'), 500);
   };
 
   // دالة تأكيد الحذف للمصروفات والإيرادات
@@ -980,11 +1274,18 @@ function App() {
       setIncomes(incomesData);
     });
 
+    // Listen to cards collection
+    const unsubscribeCards = onSnapshot(collection(db, 'cards'), (snapshot) => {
+      const cardsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Card));
+      setCards(cardsData);
+    });
+
     return () => {
       unsubscribeCities();
       unsubscribeCustomers();
       unsubscribeExpenses();
       unsubscribeIncomes();
+      unsubscribeCards();
     };
   }, [isAuthenticated]);
 
@@ -993,6 +1294,12 @@ function App() {
     const timer = setTimeout(() => setToastMessage(''), 2200);
     return () => clearTimeout(timer);
   }, [toastMessage]);
+
+  // Dark mode effect
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+    localStorage.setItem('datahub-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
 
   // Handle additional router count change
   const handleAdditionalRouterCountChange = (count: number) => {
@@ -1202,7 +1509,23 @@ function App() {
   };
 
   const handleTogglePaymentStatus = (customer: Customer, newStatus: 'paid' | 'unpaid' | 'partial') => {
-    if (newStatus === 'partial') {
+    if (newStatus === 'paid') {
+      // فتح نافذة الدفع الموحدة مع تحديد الشهر والمبلغ
+      const now = new Date();
+      const curMonth = now.getMonth() + 1;
+      const curYear = now.getFullYear();
+      setPaymentMonth(curMonth);
+      setPaymentYear(curYear);
+      // تعبئة آخر مبلغ مدخل للشهر الحالي إن وجد
+      const curYearMonth = `${curYear}-${String(curMonth).padStart(2, '0')}`;
+      const lastAmount = customer.monthlyPartialAmounts?.[curYearMonth];
+      if (lastAmount) {
+        setPartialPaymentAmount(String(lastAmount));
+      } else {
+        setPartialPaymentAmount(String(customer.subscriptionValue || ''));
+      }
+      setConfirmStatusChange({ customer, newStatus: 'paid' });
+    } else if (newStatus === 'partial') {
       setConfirmStatusChange({ customer, newStatus });
       setPartialPaymentAmount(String(customer.subscriptionPaid || ''));
     } else {
@@ -1215,18 +1538,31 @@ function App() {
     if (!confirmStatusChange) return;
     
     try {
-      // استخدم الشهر المحدد إذا كان موجوداً، وإلا استخدم الشهر الحالي
+      // استخدم الشهر المحدد من النافذة أو من yearMonth
       let yearMonth = confirmStatusChange.yearMonth;
       if (!yearMonth) {
-        const today = new Date();
-        const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
-        const currentYear = today.getFullYear();
-        yearMonth = `${currentYear}-${currentMonth}`;
+        yearMonth = `${paymentYear}-${String(paymentMonth).padStart(2, '0')}`;
+      }
+      
+      // تحديد الحالة تلقائياً بناءً على المبلغ المدفوع
+      const paidAmount = parseFloat(partialPaymentAmount) || 0;
+      const subscriptionValue = confirmStatusChange.customer.subscriptionValue || 0;
+      let finalStatus: 'paid' | 'unpaid' | 'partial' = confirmStatusChange.newStatus;
+      
+      // إذا كان الطلب هو دفع (من زر مدفوع) نحدد الحالة تلقائياً
+      if (confirmStatusChange.newStatus === 'paid' || confirmStatusChange.newStatus === 'partial') {
+        if (paidAmount <= 0) {
+          finalStatus = 'unpaid';
+        } else if (paidAmount < subscriptionValue) {
+          finalStatus = 'partial';
+        } else {
+          finalStatus = 'paid';
+        }
       }
       
       const updatedPayments = { ...(confirmStatusChange.customer.monthlyPayments || {}) };
       // Convert unpaid to pending for monthlyPayments
-      const monthlyStatus = confirmStatusChange.newStatus === 'unpaid' ? 'pending' : confirmStatusChange.newStatus;
+      const monthlyStatus = finalStatus === 'unpaid' ? 'pending' : finalStatus;
       updatedPayments[yearMonth] = monthlyStatus as 'paid' | 'partial' | 'pending';
       
       // تحديد paymentStatus بناءً على الشهر الحالي
@@ -1241,12 +1577,21 @@ function App() {
       
       // تحديث paymentStatus فقط إذا كان الشهر الحالي
       if (isCurrentMonth) {
-        updatedCustomer.paymentStatus = confirmStatusChange.newStatus;
+        updatedCustomer.paymentStatus = finalStatus;
       }
       
-      if (confirmStatusChange.newStatus === 'partial' && partialPaymentAmount) {
-        updatedCustomer.subscriptionPaid = parseFloat(partialPaymentAmount);
+      // حفظ المبلغ الجزئي لكل شهر
+      const updatedPartialAmounts = { ...(confirmStatusChange.customer.monthlyPartialAmounts || {}) };
+      if (finalStatus === 'partial' && paidAmount > 0) {
+        updatedCustomer.subscriptionPaid = paidAmount;
+        updatedPartialAmounts[yearMonth] = paidAmount;
+      } else if (finalStatus === 'paid') {
+        updatedCustomer.subscriptionPaid = subscriptionValue;
+        updatedPartialAmounts[yearMonth] = subscriptionValue;
+      } else {
+        delete updatedPartialAmounts[yearMonth];
       }
+      updatedCustomer.monthlyPartialAmounts = updatedPartialAmounts;
       
       await setDoc(doc(db, 'customers', confirmStatusChange.customer.id), updatedCustomer);
       
@@ -1257,7 +1602,7 @@ function App() {
       setCustomers(customers.map(c => c.id === confirmStatusChange.customer.id ? updatedCustomer : c));
       
       const statusMap = { paid: 'مدفوع', unpaid: 'غير مسدد', partial: 'مدفوع جزئي' };
-      setToastMessage(`تم تغيير حالة ${confirmStatusChange.customer.name} إلى ${statusMap[confirmStatusChange.newStatus]}`);
+      setToastMessage(`تم تغيير حالة ${confirmStatusChange.customer.name} إلى ${statusMap[finalStatus]}`);
       setConfirmStatusChange(null);
       setPartialPaymentAmount('');
     } catch (error) {
@@ -1545,7 +1890,11 @@ function App() {
       html2canvas: { scale: 2 },
       jsPDF: { orientation: 'portrait' as const, unit: 'mm' as const, format: 'a4' as const }
     };
+    // إزالة الثيم الداكن مؤقتاً أثناء إنشاء PDF
+    const savedThemeSetup = document.documentElement.getAttribute('data-theme');
+    if (savedThemeSetup === 'dark') document.documentElement.removeAttribute('data-theme');
     html2pdf().set(options).from(invoiceHTML).save();
+    if (savedThemeSetup === 'dark') setTimeout(() => document.documentElement.setAttribute('data-theme', 'dark'), 500);
     setToastMessage(`تم إصدار فاتورة التأسيس لـ ${customer.name}`);
   };
 
@@ -1678,7 +2027,11 @@ function App() {
       html2canvas: { scale: 2 },
       jsPDF: { orientation: 'portrait' as const, unit: 'mm' as const, format: 'a4' as const }
     };
+    // إزالة الثيم الداكن مؤقتاً أثناء إنشاء PDF
+    const savedThemeSub = document.documentElement.getAttribute('data-theme');
+    if (savedThemeSub === 'dark') document.documentElement.removeAttribute('data-theme');
     html2pdf().set(options).from(invoiceHTML).save();
+    if (savedThemeSub === 'dark') setTimeout(() => document.documentElement.setAttribute('data-theme', 'dark'), 500);
     setToastMessage(`تم إصدار فاتورة الاشتراك لـ ${customer.name}`);
   };
 
@@ -1726,7 +2079,7 @@ function App() {
             </svg>
             <h1>DATA HUB</h1>
           </div>
-          <p style={{ textAlign: 'center', color: '#6b7280' }}>جاري التحميل...</p>
+          <p style={{ textAlign: 'center', color: 'var(--text-light)' }}>جاري التحميل...</p>
         </div>
       </div>
     );
@@ -1759,16 +2112,25 @@ function App() {
       <header className="app-header">
         <div className="brand">
           <svg width="40" height="28" viewBox="0 0 56 28" fill="none">
-            <polygon points="4,4 4,24 18,14" fill="#1e40af" />
-            <polygon points="20,4 20,24 34,14" fill="#60a5fa" />
+            <polygon points="4,4 4,24 18,14" fill={darkMode ? '#6366f1' : '#4338ca'} />
+            <polygon points="20,4 20,24 34,14" fill={darkMode ? '#a5b4fc' : '#818cf8'} />
           </svg>
           <div className="brand-text">DATA HUB</div>
         </div>
+        <button 
+          className={`theme-toggle ${darkMode ? 'dark' : ''}`}
+          onClick={() => setDarkMode(!darkMode)}
+          title={darkMode ? 'وضع النهار' : 'وضع الليل'}
+        >
+          <div className="theme-toggle-thumb">
+            {darkMode ? '🌙' : '☀️'}
+          </div>
+        </button>
         <div className="search-box">
           <input 
             type="text"
             placeholder={
-              activeTab === 'expenses' || activeTab === 'microtik' 
+              activeTab === 'expenses' || activeTab === 'microtik' || activeTab === 'cards'
                 ? 'البحث غير متاح في هذا التبويب'
                 : activeTab === 'discounts'
                 ? 'ابحث في العملاء بالخصم...'
@@ -1779,7 +2141,7 @@ function App() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="search-input"
-            disabled={activeTab === 'expenses' || activeTab === 'microtik'}
+            disabled={activeTab === 'expenses' || activeTab === 'microtik' || activeTab === 'cards'}
           />
           {searchQuery && searchResults.length > 0 && (
             <div className="search-results">
@@ -1800,7 +2162,7 @@ function App() {
           )}
           {searchQuery && searchResults.length === 0 && activeTab !== 'expenses' && activeTab !== 'microtik' && (
             <div className="search-results">
-              <div className="search-result-item" style={{ color: '#6b7280', cursor: 'default' }}>
+              <div className="search-result-item" style={{ color: 'var(--text-light)', cursor: 'default' }}>
                 لا توجد نتائج في هذا التبويب
               </div>
             </div>
@@ -1818,6 +2180,7 @@ function App() {
         <button className={`tab-btn ${activeTab === 'expenses' ? 'active' : ''}`} onClick={() => setActiveTab('expenses')}>المصروفات</button>
         <button className={`tab-btn ${activeTab === 'discounts' ? 'active' : ''}`} onClick={() => setActiveTab('discounts')}>الخصومات</button>
         <button className={`tab-btn ${activeTab === 'suspended' ? 'active' : ''}`} onClick={() => setActiveTab('suspended')}>إيقاف مؤقت</button>
+        <button className={`tab-btn ${activeTab === 'cards' ? 'active' : ''}`} onClick={() => setActiveTab('cards')}>البطاقات</button>
         <button className={`tab-btn ${activeTab === 'microtik' ? 'active' : ''}`} onClick={() => setActiveTab('microtik')}>ميكروتيك</button>
       </div>
 
@@ -1833,7 +2196,7 @@ function App() {
                 <div style={{ maxWidth: 500, margin: '8px auto 20px', textAlign: 'right' }}>
                   <h3 style={{ margin: 0, fontSize: 16 }}>Cloud NAT IP</h3>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-                    <div style={{ color: '#111', fontWeight: 700 }}>{cloudNatIp}</div>
+                    <div style={{ color: 'var(--text)', fontWeight: 700 }}>{cloudNatIp}</div>
                     <button className="btn ghost" onClick={fetchCloudNatIp} type="button">تحديث</button>
                   </div>
                 </div>
@@ -1882,7 +2245,7 @@ function App() {
                 >
                   <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>IP جهاز ميكروتيك</span>
-                    <label style={{ fontSize: 13, color: '#666' }}>
+                    <label style={{ fontSize: 13, color: 'var(--text-light)' }}>
                       <input type="checkbox" checked={useCloudNat} onChange={(e) => setUseCloudNat(e.target.checked)} style={{ marginLeft: 8 }} />
                       استخدام Cloud NAT
                     </label>
@@ -1923,7 +2286,7 @@ function App() {
                   <div style={{ marginTop: 16, color: mikroMsg.startsWith('تم') ? 'green' : 'red' }}>{mikroMsg}</div>
                 )}
 
-                <div style={{ marginTop: 24, color: '#888', fontSize: 15 }}>
+                <div style={{ marginTop: 24, color: 'var(--text-light)', fontSize: 15 }}>
                   <b>ملاحظة:</b> يجب تفعيل API في جهاز ميكروتيك من IP &gt; Services &gt; api (port 8728)
                 </div>
               </>
@@ -2433,15 +2796,9 @@ function App() {
                         <div className="payment-buttons">
                           <button 
                             onClick={() => handleTogglePaymentStatus(customer, 'paid')} 
-                            className={`payment-btn ${customer.paymentStatus === 'paid' ? 'active' : ''}`}
+                            className={`payment-btn ${customer.paymentStatus === 'paid' ? 'active' : customer.paymentStatus === 'partial' ? 'active partial-active' : ''}`}
                           >
-                            مدفوع
-                          </button>
-                          <button 
-                            onClick={() => handleTogglePaymentStatus(customer, 'partial')} 
-                            className={`payment-btn ${customer.paymentStatus === 'partial' ? 'active' : ''}`}
-                          >
-                            جزئي
+                            {customer.paymentStatus === 'partial' ? 'جزئي' : 'مدفوع'}
                           </button>
                           <button 
                             onClick={() => handleTogglePaymentStatus(customer, 'unpaid')} 
@@ -2618,6 +2975,13 @@ function App() {
                 <tbody>
                   {customers
                     .filter(c => !yearlyCityId || c.cityId === yearlyCityId)
+                    .filter(c => {
+                      if (!searchQuery.trim()) return true;
+                      const q = searchQuery.trim().toLowerCase();
+                      return c.name.toLowerCase().includes(q) ||
+                        (c.userName && c.userName.toLowerCase().includes(q)) ||
+                        (c.phone && c.phone.includes(q));
+                    })
                     .map((customer) => {
                       const city = cities.find(c => c.id === customer.cityId);
                       let paidCount = 0;
@@ -2645,7 +3009,18 @@ function App() {
                                   <button
                                     className={`status-btn ${status}`}
                                     onClick={() => {
-                                      const nextStatus = status === 'pending' ? 'partial' : status === 'partial' ? 'paid' : 'pending';
+                                      // إذا كان الشهر جزئي وضغط عليه مرة ثانية، نفتح النافذة لتعديل المبلغ
+                                      if (status === 'partial') {
+                                        setConfirmStatusChange({ 
+                                          customer, 
+                                          newStatus: 'partial',
+                                          yearMonth
+                                        });
+                                        const lastAmount = customer.monthlyPartialAmounts?.[yearMonth];
+                                        setPartialPaymentAmount(lastAmount ? String(lastAmount) : String(customer.subscriptionPaid || ''));
+                                        return;
+                                      }
+                                      const nextStatus = status === 'pending' ? 'partial' : 'pending';
                                       // إذا كانت الحالة الجديدة جزئي، نفتح نافذة إدخال المبلغ
                                       if (nextStatus === 'partial') {
                                         setConfirmStatusChange({ 
@@ -2653,7 +3028,9 @@ function App() {
                                           newStatus: 'partial',
                                           yearMonth
                                         });
-                                        setPartialPaymentAmount('');
+                                        // تعبئة آخر مبلغ مدخل لهذا الشهر إن وجد
+                                        const lastAmount = customer.monthlyPartialAmounts?.[yearMonth];
+                                        setPartialPaymentAmount(lastAmount ? String(lastAmount) : '');
                                       } else {
                                         // تحديث مباشر للحالات الأخرى مع مزامنة paymentStatus
                                         const today = new Date();
@@ -2681,6 +3058,11 @@ function App() {
                                     }}
                                   >
                                     {statusLabels[status]}
+                                    {status === 'partial' && customer.monthlyPartialAmounts?.[yearMonth] && (
+                                      <span style={{ display: 'block', fontSize: '9px', marginTop: '1px', opacity: 0.9 }}>
+                                        {customer.monthlyPartialAmounts[yearMonth]} ﷼
+                                      </span>
+                                    )}
                                   </button>
                                   <button
                                     className="invoice-mini-btn"
@@ -3099,28 +3481,78 @@ function App() {
       {/* Confirm Status Change Modal */}
       {confirmStatusChange && (
         <div className="modal-overlay" onClick={() => setConfirmStatusChange(null)}>
-          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: confirmStatusChange.newStatus === 'unpaid' ? '440px' : '480px' }}>
             <div className="modal-header">
-              <h3>تأكيد تغيير الحالة</h3>
+              <h3>{confirmStatusChange.newStatus === 'unpaid' ? 'تأكيد تغيير الحالة' : '💳 تسجيل دفعة'}</h3>
               <button onClick={() => setConfirmStatusChange(null)} className="modal-close">×</button>
             </div>
             <div className="modal-body">
-              <p className="confirm-text">
-                هل تريد تغيير حالة <strong>{confirmStatusChange.customer.name}</strong> إلى{' '}
-                <strong className={confirmStatusChange.newStatus === 'paid' ? 'text-success' : confirmStatusChange.newStatus === 'partial' ? 'text-info' : 'text-warning'}>
-                  {confirmStatusChange.newStatus === 'paid' ? 'مدفوع' : confirmStatusChange.newStatus === 'partial' ? 'مدفوع جزئي' : 'غير مسدد'}
-                </strong>؟
-              </p>
-              {confirmStatusChange.newStatus === 'partial' && (
-                <div className="edit-field">
-                  <label>المبلغ المدفوع</label>
-                  <input 
-                    type="number" 
-                    value={partialPaymentAmount}
-                    onChange={(e) => setPartialPaymentAmount(e.target.value)}
-                    placeholder="أدخل المبلغ المدفوع"
-                  />
-                </div>
+              {confirmStatusChange.newStatus === 'unpaid' ? (
+                <p className="confirm-text">
+                  هل تريد تغيير حالة <strong>{confirmStatusChange.customer.name}</strong> إلى{' '}
+                  <strong className="text-warning">غير مسدد</strong>؟
+                </p>
+              ) : (
+                <>
+                  <p className="confirm-text" style={{ marginBottom: '16px', fontSize: '15px' }}>
+                    تسجيل دفعة لـ <strong style={{ color: 'var(--primary-light)' }}>{confirmStatusChange.customer.name}</strong>
+                  </p>
+                  {!confirmStatusChange.yearMonth && (
+                    <div className="payment-date-picker">
+                      <div className="year-nav">
+                        <button className="year-nav-btn" onClick={() => setPaymentYear(paymentYear + 1)}>›</button>
+                        <span className="year-nav-label">{paymentYear}</span>
+                        <button className="year-nav-btn" onClick={() => setPaymentYear(paymentYear - 1)}>‹</button>
+                      </div>
+                      <div className="month-grid">
+                        {MONTHS_AR.map((m, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            className={`month-card${paymentMonth === i + 1 ? ' active' : ''}${i + 1 === new Date().getMonth() + 1 && paymentYear === new Date().getFullYear() ? ' current' : ''}`}
+                            onClick={() => setPaymentMonth(i + 1)}
+                          >
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="payment-amount-section">
+                    <div className="payment-amount-label">
+                      <span>المبلغ المدفوع</span>
+                      <span className="subscription-value">{confirmStatusChange.customer.subscriptionValue || 0} ﷼</span>
+                    </div>
+                    <input 
+                      type="number" 
+                      className="payment-amount-input"
+                      value={partialPaymentAmount}
+                      onChange={(e) => setPartialPaymentAmount(e.target.value)}
+                      placeholder="0"
+                    />
+                  </div>
+                  {(() => {
+                    const paid = parseFloat(partialPaymentAmount) || 0;
+                    const total = confirmStatusChange.customer.subscriptionValue || 0;
+                    const remaining = total - paid;
+                    if (paid > 0 && paid < total) {
+                      return (
+                        <div className="payment-status-indicator partial">
+                          <span className="status-icon">⚠️</span>
+                          <span>دفع جزئي — المتبقي: <span className="remaining-amount">{remaining} ﷼</span></span>
+                        </div>
+                      );
+                    } else if (paid >= total && total > 0) {
+                      return (
+                        <div className="payment-status-indicator full">
+                          <span className="status-icon">✅</span>
+                          <span>مدفوع بالكامل</span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </>
               )}
             </div>
             <div className="modal-footer">
@@ -3249,7 +3681,7 @@ function App() {
                         onClick={() => setShowExemptList(!showExemptList)} 
                         className="btn" 
                         style={{ 
-                          background: '#9c27b0', 
+                          background: 'var(--primary)', 
                           color: 'white', 
                           padding: '6px 12px', 
                           borderRadius: '20px',
@@ -3268,16 +3700,16 @@ function App() {
                           top: '100%',
                           right: 0,
                           marginTop: '5px',
-                          background: 'white',
+                          background: 'var(--card)',
                           borderRadius: '10px',
-                          boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                          boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
                           padding: '10px 0',
                           minWidth: '250px',
                           maxHeight: '300px',
                           overflowY: 'auto',
                           zIndex: 100
                         }}>
-                          <div style={{ padding: '8px 15px', borderBottom: '1px solid #eee', fontWeight: 'bold', color: '#9c27b0' }}>
+                          <div style={{ padding: '8px 15px', borderBottom: '1px solid var(--border)', fontWeight: 'bold', color: 'var(--primary-light)' }}>
                             العملاء المعفيين من الإيرادات
                           </div>
                           {exemptCustomers.map(customer => {
@@ -3291,7 +3723,7 @@ function App() {
                                 alignItems: 'center'
                               }}>
                                 <span>{customer.name}</span>
-                                <span style={{ fontSize: '11px', color: '#888' }}>{city?.name || ''}</span>
+                                <span style={{ fontSize: '11px', color: 'var(--text-light)' }}>{city?.name || ''}</span>
                               </div>
                             );
                           })}
@@ -3369,7 +3801,7 @@ function App() {
                       );
                     })}
                     {revenuesData.paid.length === 0 && (
-                      <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات مستحصلة</td></tr>
+                      <tr><td colSpan={4} style={{textAlign: 'center', color: 'var(--text-light)'}}>لا توجد إيرادات مستحصلة</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -3410,7 +3842,7 @@ function App() {
                       );
                     })}
                     {revenuesData.partial.length === 0 && (
-                      <tr><td colSpan={5} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات جزئية</td></tr>
+                      <tr><td colSpan={5} style={{textAlign: 'center', color: 'var(--text-light)'}}>لا توجد إيرادات جزئية</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -3449,7 +3881,7 @@ function App() {
                       );
                     })}
                     {revenuesData.pending.length === 0 && (
-                      <tr><td colSpan={4} style={{textAlign: 'center', color: '#999'}}>لا توجد إيرادات متأخرة</td></tr>
+                      <tr><td colSpan={4} style={{textAlign: 'center', color: 'var(--text-light)'}}>لا توجد إيرادات متأخرة</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -4078,6 +4510,227 @@ function App() {
           </div>
         )}
 
+        {activeTab === 'cards' && (() => {
+          const filteredCards = cards.filter(c => c.month === cardsMonth && c.year === cardsYear).filter(c => !cardSearch.trim() || c.cardNumber.includes(cardSearch.trim()) || c.package.toLowerCase().includes(cardSearch.trim().toLowerCase()));
+          const totalRevenue = filteredCards.reduce((sum, c) => sum + c.value, 0);
+          const uniquePackages = [...new Set(filteredCards.map(c => c.package))];
+          const packageStats = uniquePackages.map(pkg => {
+            const pkgCards = filteredCards.filter(c => c.package === pkg);
+            return { name: pkg, count: pkgCards.length, total: pkgCards.reduce((s, c) => s + c.value, 0) };
+          }).sort((a, b) => b.total - a.total);
+          
+          return (
+          <div className="section cards-section">
+            {/* Servox Logo */}
+            <div className="cards-logo-banner">
+              <img src="/logo.png" alt="Servox" className="cards-logo-img" />
+            </div>
+
+            {/* Header */}
+            <div className="cards-hero">
+              <div className="cards-hero-content">
+                <div className="cards-hero-icon">💳</div>
+                <div>
+                  <h2 className="cards-hero-title">نظام البطاقات</h2>
+                  <p className="cards-hero-subtitle">إدارة وتتبع مبيعات البطاقات والإيرادات</p>
+                </div>
+              </div>
+              <div className="cards-hero-actions">
+                <button className="cards-report-btn" onClick={() => { setReportMonth(cardsMonth); setReportYear(cardsYear); setReportPackage(''); setShowReportFilters(!showReportFilters); }}>📄 طباعة تقرير</button>
+                <button className="cards-add-btn" onClick={() => setShowAddCardForm(!showAddCardForm)}>
+                  {showAddCardForm ? '✕ إغلاق' : '+ بطاقة جديدة'}
+                </button>
+              </div>
+            </div>
+
+            {/* Report Filters */}
+            {showReportFilters && (
+              <div className="cards-report-filters">
+                <div className="report-filters-header">
+                  <h3>📄 فلاتر التقرير</h3>
+                  <button className="report-filters-close" onClick={() => setShowReportFilters(false)}>✕</button>
+                </div>
+                <div className="report-filters-grid">
+                  <div className="report-filter-field">
+                    <label>الشهر</label>
+                    <select value={reportMonth} onChange={(e) => setReportMonth(Number(e.target.value))}>
+                      <option value={0}>كل الشهور</option>
+                      {MONTHS_AR.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div className="report-filter-field">
+                    <label>السنة</label>
+                    <div className="report-year-nav">
+                      <button onClick={() => setReportYear(y => y - 1)}>◀</button>
+                      <span>{reportYear}</span>
+                      <button onClick={() => setReportYear(y => y + 1)}>▶</button>
+                    </div>
+                  </div>
+                  <div className="report-filter-field">
+                    <label>الباقة</label>
+                    <select value={reportPackage} onChange={(e) => setReportPackage(e.target.value)}>
+                      <option value="">كل الباقات</option>
+                      {[...new Set(cards.map(c => c.package))].map(pkg => <option key={pkg} value={pkg}>{pkg}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <button className="report-generate-btn" onClick={printCardsReportPdf}>📄 إنشاء التقرير</button>
+              </div>
+            )}
+
+            {/* Search */}
+            <div className="cards-search-wrapper">
+              <span className="cards-search-icon">🔍</span>
+              <input
+                type="text"
+                className="cards-search-input"
+                placeholder="ابحث برقم البطاقة أو اسم الباقة..."
+                value={cardSearch}
+                onChange={(e) => setCardSearch(e.target.value)}
+              />
+              {cardSearch && <button className="cards-search-clear" onClick={() => setCardSearch('')}>✕</button>}
+            </div>
+
+            {/* Add Card Form */}
+            {showAddCardForm && (
+              <div className="cards-form-wrapper">
+                <div className="cards-form">
+                  <div className="cards-form-grid">
+                    <div className="cards-field">
+                      <label>رقم البطاقة</label>
+                      <input type="text" value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} placeholder="مثال: 9912345678" />
+                    </div>
+                    <div className="cards-field">
+                      <label>الباقة</label>
+                      <input type="text" value={cardPackage} onChange={(e) => setCardPackage(e.target.value)} placeholder="مثال: 100 جيجا" />
+                    </div>
+                    <div className="cards-field">
+                      <label>القيمة (﷼)</label>
+                      <input type="number" value={cardValue} onChange={(e) => setCardValue(e.target.value)} placeholder="0" />
+                    </div>
+                    <div className="cards-field">
+                      <label>التاريخ</label>
+                      <input type="date" value={cardDate} onChange={(e) => setCardDate(e.target.value)} />
+                    </div>
+                    <div className="cards-field cards-field-wide">
+                      <label>ملاحظة <span style={{ opacity: 0.5 }}>(اختياري)</span></label>
+                      <input type="text" value={cardNote} onChange={(e) => setCardNote(e.target.value)} placeholder="أي ملاحظة إضافية..." />
+                    </div>
+                  </div>
+                  <button className="cards-submit-btn" onClick={addCard}>💳 إضافة البطاقة</button>
+                </div>
+              </div>
+            )}
+
+            {/* Stats Cards */}
+            <div className="cards-filters">
+              <select value={cardsMonth} onChange={(e) => setCardsMonth(Number(e.target.value))} className="cards-select">
+                {MONTHS_AR.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              </select>
+              <div className="cards-year-nav">
+                <button onClick={() => setCardsYear(y => y - 1)}>◀</button>
+                <span>{cardsYear}</span>
+                <button onClick={() => setCardsYear(y => y + 1)}>▶</button>
+              </div>
+            </div>
+
+            <div className="cards-stats">
+              <div className="cards-stat-card cards-stat-total">
+                <div className="cards-stat-icon">💰</div>
+                <div className="cards-stat-info">
+                  <div className="cards-stat-value">{totalRevenue.toLocaleString()} ﷼</div>
+                  <div className="cards-stat-label">إجمالي الإيرادات</div>
+                </div>
+              </div>
+              <div className="cards-stat-card cards-stat-count">
+                <div className="cards-stat-icon">🎫</div>
+                <div className="cards-stat-info">
+                  <div className="cards-stat-value">{filteredCards.length}</div>
+                  <div className="cards-stat-label">عدد البطاقات المباعة</div>
+                </div>
+              </div>
+              <div className="cards-stat-card cards-stat-avg">
+                <div className="cards-stat-icon">📊</div>
+                <div className="cards-stat-info">
+                  <div className="cards-stat-value">{filteredCards.length > 0 ? Math.round(totalRevenue / filteredCards.length).toLocaleString() : 0} ﷼</div>
+                  <div className="cards-stat-label">متوسط قيمة البطاقة</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Package Breakdown */}
+            {packageStats.length > 0 && (
+              <div className="cards-packages">
+                <h3 className="cards-packages-title">📦 إيرادات حسب الباقة</h3>
+                <div className="cards-packages-grid">
+                  {packageStats.map(pkg => (
+                    <div key={pkg.name} className={`cards-package-card ${cardSearch === pkg.name ? 'cards-package-active' : ''}`} onClick={() => setCardSearch(cardSearch === pkg.name ? '' : pkg.name)} style={{ cursor: 'pointer' }}>
+                      <div className="cards-package-name">{pkg.name}</div>
+                      <div className="cards-package-stats">
+                        <span className="cards-package-count">{pkg.count} بطاقة</span>
+                        <span className="cards-package-total">{pkg.total.toLocaleString()} ﷼</span>
+                      </div>
+                      <div className="cards-package-bar">
+                        <div className="cards-package-bar-fill" style={{ width: `${totalRevenue > 0 ? (pkg.total / totalRevenue) * 100 : 0}%` }}></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Cards Table */}
+            <div className="cards-table-wrapper">
+              <h3 className="cards-table-title">📋 سجل البطاقات المباعة</h3>
+              {filteredCards.length === 0 ? (
+                <div className="cards-empty">
+                  <div className="cards-empty-icon">💳</div>
+                  <p>لا توجد بطاقات مباعة في هذا الشهر</p>
+                </div>
+              ) : (
+                <table className="cards-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>رقم البطاقة</th>
+                      <th>الباقة</th>
+                      <th>القيمة</th>
+                      <th>التاريخ</th>
+                      <th>ملاحظة</th>
+                      <th>إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredCards
+                      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                      .map((card, idx) => (
+                      <tr key={card.id}>
+                        <td className="cards-row-num">{idx + 1}</td>
+                        <td className="cards-row-number">{card.cardNumber}</td>
+                        <td><span className="cards-badge">{card.package}</span></td>
+                        <td className="cards-row-value">{card.value.toLocaleString()} ﷼</td>
+                        <td>{formatDate(card.date)}</td>
+                        <td className="cards-row-note">{card.note || '—'}</td>
+                        <td>
+                          <button className="cards-delete-btn" onClick={() => setCardDeleteConfirm(card)}>🗑️</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={3} className="cards-footer-label">الإجمالي</td>
+                      <td className="cards-footer-value">{totalRevenue.toLocaleString()} ﷼</td>
+                      <td colSpan={3}></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+          </div>
+          );
+        })()}
+
       {/* Transfer Customer Modal */}
       {transferModal && transferCustomer && (
         <div className="modal-overlay" onClick={() => setTransferModal(false)}>
@@ -4122,6 +4775,39 @@ function App() {
               </button>
               <button onClick={confirmTransferCustomer} className="btn primary" disabled={transferLoading}>
                 {transferLoading ? 'جاري النقل...' : 'تأكيد النقل'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Card Delete Confirm Modal */}
+      {cardDeleteConfirm && (
+        <div className="modal-overlay" onClick={() => setCardDeleteConfirm(null)}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>حذف بطاقة</h3>
+              <button onClick={() => setCardDeleteConfirm(null)} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text">
+                هل تريد حذف البطاقة <strong>{cardDeleteConfirm.cardNumber}</strong> ({cardDeleteConfirm.package} - {cardDeleteConfirm.value} ﷼)؟
+              </p>
+              <div className="edit-field">
+                <label>أدخل كلمة المرور للتأكيد</label>
+                <input
+                  type="password"
+                  value={cardDeletePassword}
+                  onChange={(e) => setCardDeletePassword(e.target.value)}
+                  placeholder="كلمة المرور"
+                  onKeyDown={(e) => e.key === 'Enter' && confirmDeleteCard()}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => setCardDeleteConfirm(null)} className="btn secondary">إلغاء</button>
+              <button onClick={confirmDeleteCard} className="btn danger" disabled={cardDeleteLoading}>
+                {cardDeleteLoading ? 'جاري الحذف...' : 'حذف'}
               </button>
             </div>
           </div>

@@ -18,5 +18,9 @@ service cloud.firestore {
     match /incomes/{incomeId} {
       allow read, write: if request.auth != null;
     }
+    
+    match /cards/{cardId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }
