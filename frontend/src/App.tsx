@@ -29,9 +29,10 @@ type Customer = {
   lap?: string;
   site?: string;
   notes?: string;
-  paymentStatus?: 'paid' | 'unpaid' | 'partial';
-  monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' };
+  paymentStatus?: 'paid' | 'unpaid' | 'partial' | 'discount';
+  monthlyPayments?: { [yearMonth: string]: 'paid' | 'partial' | 'pending' | 'discount' };
   monthlyPartialAmounts?: { [yearMonth: string]: number };
+  monthlyDiscountAmounts?: { [yearMonth: string]: number };
   hasDiscount?: boolean;
   discountAmount?: number;
   isSuspended?: boolean;
@@ -114,8 +115,9 @@ function App() {
   const [revenuesMonth, setRevenuesMonth] = useState(new Date().getMonth() + 1);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
-  const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid' | 'partial'; yearMonth?: string} | null>(null);
+  const [confirmStatusChange, setConfirmStatusChange] = useState<{customer: Customer; newStatus: 'paid' | 'unpaid' | 'partial' | 'discount'; yearMonth?: string} | null>(null);
   const [partialPaymentAmount, setPartialPaymentAmount] = useState('');
+  const [partialPaymentType, setPartialPaymentType] = useState<'partial' | 'discount'>('partial');
   const [paymentMonth, setPaymentMonth] = useState(new Date().getMonth() + 1);
   const [paymentYear, setPaymentYear] = useState(new Date().getFullYear());
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('datahub-theme') === 'dark');
@@ -1547,14 +1549,15 @@ function App() {
       // تحديد الحالة تلقائياً بناءً على المبلغ المدفوع
       const paidAmount = parseFloat(partialPaymentAmount) || 0;
       const subscriptionValue = confirmStatusChange.customer.subscriptionValue || 0;
-      let finalStatus: 'paid' | 'unpaid' | 'partial' = confirmStatusChange.newStatus;
+      let finalStatus: 'paid' | 'unpaid' | 'partial' | 'discount' = confirmStatusChange.newStatus;
       
       // إذا كان الطلب هو دفع (من زر مدفوع) نحدد الحالة تلقائياً
-      if (confirmStatusChange.newStatus === 'paid' || confirmStatusChange.newStatus === 'partial') {
+      if (confirmStatusChange.newStatus === 'paid' || confirmStatusChange.newStatus === 'partial' || confirmStatusChange.newStatus === 'discount') {
         if (paidAmount <= 0) {
           finalStatus = 'unpaid';
         } else if (paidAmount < subscriptionValue) {
-          finalStatus = 'partial';
+          // استخدام نوع الدفع المختار (جزئي أو خصم)
+          finalStatus = partialPaymentType;
         } else {
           finalStatus = 'paid';
         }
@@ -1563,7 +1566,12 @@ function App() {
       const updatedPayments = { ...(confirmStatusChange.customer.monthlyPayments || {}) };
       // Convert unpaid to pending for monthlyPayments
       const monthlyStatus = finalStatus === 'unpaid' ? 'pending' : finalStatus;
-      updatedPayments[yearMonth] = monthlyStatus as 'paid' | 'partial' | 'pending';
+      
+      // التحقق من الحالة السابقة للشهر
+      const previousMonthStatus = confirmStatusChange.customer.monthlyPayments?.[yearMonth];
+      const previousDiscountAmount = confirmStatusChange.customer.monthlyDiscountAmounts?.[yearMonth] || 0;
+      
+      updatedPayments[yearMonth] = monthlyStatus as 'paid' | 'partial' | 'pending' | 'discount';
       
       // تحديد paymentStatus بناءً على الشهر الحالي
       const today = new Date();
@@ -1572,7 +1580,7 @@ function App() {
       
       const updatedCustomer: Customer = {
         ...confirmStatusChange.customer,
-        monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending'>,
+        monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending' | 'discount'>,
       };
       
       // تحديث paymentStatus فقط إذا كان الشهر الحالي
@@ -1580,18 +1588,50 @@ function App() {
         updatedCustomer.paymentStatus = finalStatus;
       }
       
-      // حفظ المبلغ الجزئي لكل شهر
+      // حفظ المبلغ الجزئي أو الخصم لكل شهر
       const updatedPartialAmounts = { ...(confirmStatusChange.customer.monthlyPartialAmounts || {}) };
+      const updatedDiscountAmounts = { ...(confirmStatusChange.customer.monthlyDiscountAmounts || {}) };
+      
+      // إذا كانت الحالة السابقة خصم والحالة الجديدة مختلفة، نزيل الخصم
+      if (previousMonthStatus === 'discount' && finalStatus !== 'discount' && previousDiscountAmount > 0) {
+        const currentTotalDiscount = confirmStatusChange.customer.discountAmount || 0;
+        const newTotalDiscount = Math.max(0, currentTotalDiscount - previousDiscountAmount);
+        updatedCustomer.discountAmount = newTotalDiscount;
+        // إذا لم يعد هناك خصومات، نزيل علامة الخصم
+        if (newTotalDiscount === 0) {
+          updatedCustomer.hasDiscount = false;
+        }
+        delete updatedDiscountAmounts[yearMonth];
+      }
+      
       if (finalStatus === 'partial' && paidAmount > 0) {
         updatedCustomer.subscriptionPaid = paidAmount;
         updatedPartialAmounts[yearMonth] = paidAmount;
+        delete updatedDiscountAmounts[yearMonth];
+      } else if (finalStatus === 'discount' && paidAmount > 0) {
+        // حالة الخصم: المبلغ المدفوع هو قيمة الاشتراك والفرق هو الخصم
+        const discountAmount = subscriptionValue - paidAmount;
+        updatedCustomer.subscriptionPaid = subscriptionValue; // اعتبره مدفوع بالكامل
+        updatedCustomer.hasDiscount = true;
+        // إذا كانت الحالة السابقة خصم، نحدث الفرق فقط
+        if (previousMonthStatus === 'discount') {
+          const currentTotalDiscount = confirmStatusChange.customer.discountAmount || 0;
+          updatedCustomer.discountAmount = currentTotalDiscount - previousDiscountAmount + discountAmount;
+        } else {
+          updatedCustomer.discountAmount = (confirmStatusChange.customer.discountAmount || 0) + discountAmount;
+        }
+        updatedPartialAmounts[yearMonth] = paidAmount;
+        updatedDiscountAmounts[yearMonth] = discountAmount;
       } else if (finalStatus === 'paid') {
         updatedCustomer.subscriptionPaid = subscriptionValue;
         updatedPartialAmounts[yearMonth] = subscriptionValue;
+        delete updatedDiscountAmounts[yearMonth];
       } else {
         delete updatedPartialAmounts[yearMonth];
+        delete updatedDiscountAmounts[yearMonth];
       }
       updatedCustomer.monthlyPartialAmounts = updatedPartialAmounts;
+      updatedCustomer.monthlyDiscountAmounts = updatedDiscountAmounts;
       
       await setDoc(doc(db, 'customers', confirmStatusChange.customer.id), updatedCustomer);
       
@@ -1601,10 +1641,11 @@ function App() {
       }
       setCustomers(customers.map(c => c.id === confirmStatusChange.customer.id ? updatedCustomer : c));
       
-      const statusMap = { paid: 'مدفوع', unpaid: 'غير مسدد', partial: 'مدفوع جزئي' };
+      const statusMap: Record<string, string> = { paid: 'مدفوع', unpaid: 'غير مسدد', partial: 'مدفوع جزئي', discount: 'مدفوع بخصم' };
       setToastMessage(`تم تغيير حالة ${confirmStatusChange.customer.name} إلى ${statusMap[finalStatus]}`);
       setConfirmStatusChange(null);
       setPartialPaymentAmount('');
+      setPartialPaymentType('partial');
     } catch (error) {
       setToastMessage('خطأ في تغيير الحالة');
       console.error(error);
@@ -1904,7 +1945,7 @@ function App() {
     const city = cities.find((c) => c.id === customer.cityId);
     
     // إذا تم تحديد شهر وسنة، استخدم حالة الدفع من monthlyPayments
-    let paymentStatus: 'paid' | 'partial' | 'pending' = 'pending';
+    let paymentStatus: 'paid' | 'partial' | 'pending' | 'discount' = 'pending';
     let invoiceDate = todayISO();
     let monthName = '';
     let isPreviousMonth = false;
@@ -1920,10 +1961,10 @@ function App() {
       // تحقق إذا كان الشهر/السنة مختلفة عن الحالية
       isPreviousMonth = (year !== currentYear || month !== currentMonth);
     } else {
-      paymentStatus = customer.paymentStatus === 'paid' ? 'paid' : customer.paymentStatus === 'partial' ? 'partial' : 'pending';
+      paymentStatus = customer.paymentStatus === 'paid' ? 'paid' : customer.paymentStatus === 'partial' ? 'partial' : customer.paymentStatus === 'discount' ? 'discount' : 'pending';
     }
     
-    const isPaid = paymentStatus === 'paid';
+    const isPaid = paymentStatus === 'paid' || paymentStatus === 'discount';
     const isPartial = paymentStatus === 'partial';
 
     const invoiceHTML = `
@@ -2099,7 +2140,14 @@ function App() {
           <form onSubmit={handleLogin}>
             <input type="email" placeholder="البريد الإلكتروني" value={username} onChange={(e) => setUsername(e.target.value)} required />
             <input type="password" placeholder="كلمة المرور" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            <button type="submit">دخول</button>
+            <button type="submit" className="login-btn">
+              <span className="btn-text">دخول</span>
+              <span className="btn-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M13.8 12H3"/>
+                </svg>
+              </span>
+            </button>
           </form>
         </div>
         {toastMessage && <div className="toast">{toastMessage}</div>}
@@ -2796,13 +2844,13 @@ function App() {
                         <div className="payment-buttons">
                           <button 
                             onClick={() => handleTogglePaymentStatus(customer, 'paid')} 
-                            className={`payment-btn ${customer.paymentStatus === 'paid' ? 'active' : customer.paymentStatus === 'partial' ? 'active partial-active' : ''}`}
+                            className={`payment-btn ${customer.paymentStatus === 'paid' ? 'active' : customer.paymentStatus === 'partial' ? 'partial-active' : customer.paymentStatus === 'discount' ? 'discount-active' : ''}`}
                           >
-                            {customer.paymentStatus === 'partial' ? 'جزئي' : 'مدفوع'}
+                            {customer.paymentStatus === 'partial' ? 'جزئي' : customer.paymentStatus === 'discount' ? 'مدفوع بخصم' : 'مدفوع'}
                           </button>
                           <button 
                             onClick={() => handleTogglePaymentStatus(customer, 'unpaid')} 
-                            className={`payment-btn ${customer.paymentStatus === 'unpaid' ? 'active' : ''}`}
+                            className={`payment-btn ${customer.paymentStatus === 'unpaid' ? 'unpaid-active' : ''}`}
                           >
                             غير مسدد
                           </button>
@@ -2875,8 +2923,8 @@ function App() {
                 const remaining = (customer.setupFeeTotal ?? 0) - (customer.setupFeePaid ?? 0);
                 const yearMonth = `${invoiceYear}-${String(invoiceMonth).padStart(2, '0')}`;
                 const monthStatus = customer.monthlyPayments?.[yearMonth] || 'pending';
-                const statusLabel = monthStatus === 'paid' ? '✓ مدفوع' : monthStatus === 'partial' ? '◐ جزئي' : '✗ غير مسدد';
-                const statusClass = monthStatus === 'paid' ? 'status-paid' : monthStatus === 'partial' ? 'status-partial' : 'status-unpaid';
+                const statusLabel = monthStatus === 'paid' ? '✓ مدفوع' : monthStatus === 'partial' ? '◐ جزئي' : monthStatus === 'discount' ? '🏷️ مدفوع بخصم' : '✗ غير مسدد';
+                const statusClass = monthStatus === 'paid' ? 'status-paid' : monthStatus === 'partial' ? 'status-partial' : monthStatus === 'discount' ? 'status-discount' : 'status-unpaid';
                 const daysSinceStart = getDaysSinceStart(customer.startDate);
                 return (
                 <div key={customer.id} className="invoice-card">
@@ -2994,13 +3042,14 @@ function App() {
                           {MONTHS_AR.map((_, monthIdx) => {
                             const yearMonth = `${selectedYear}-${String(monthIdx + 1).padStart(2, '0')}`;
                             const status = customer.monthlyPayments?.[yearMonth] || 'pending';
-                            if (status === 'paid') paidCount++;
+                            if (status === 'paid' || status === 'discount') paidCount++;
                             if (status === 'partial') paidCount += 0.5;
                             
-                            const statusLabels = {
+                            const statusLabels: Record<string, string> = {
                               paid: 'مدفوع',
                               partial: 'جزئي',
-                              pending: 'انتظار'
+                              pending: 'انتظار',
+                              discount: 'بخصم'
                             };
                             
                             return (
@@ -3044,7 +3093,7 @@ function App() {
                                         
                                         const updatedCustomer: Customer = {
                                           ...customer,
-                                          monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending'>,
+                                          monthlyPayments: updatedPayments as Record<string, 'paid' | 'partial' | 'pending' | 'discount'>,
                                         };
                                         
                                         // مزامنة paymentStatus إذا كان الشهر الحالي
@@ -3537,10 +3586,36 @@ function App() {
                     const remaining = total - paid;
                     if (paid > 0 && paid < total) {
                       return (
-                        <div className="payment-status-indicator partial">
-                          <span className="status-icon">⚠️</span>
-                          <span>دفع جزئي — المتبقي: <span className="remaining-amount">{remaining} ﷼</span></span>
-                        </div>
+                        <>
+                          <div className="payment-type-choice">
+                            <span className="choice-label">اختر نوع الدفع:</span>
+                            <div className="choice-buttons">
+                              <button
+                                type="button"
+                                className={`choice-btn ${partialPaymentType === 'partial' ? 'active partial' : ''}`}
+                                onClick={() => setPartialPaymentType('partial')}
+                              >
+                                جزئي
+                              </button>
+                              <button
+                                type="button"
+                                className={`choice-btn ${partialPaymentType === 'discount' ? 'active discount' : ''}`}
+                                onClick={() => setPartialPaymentType('discount')}
+                              >
+                                خصم
+                              </button>
+                            </div>
+                          </div>
+                          <div className={`payment-status-indicator ${partialPaymentType === 'discount' ? 'discount' : 'partial'}`}>
+                            <span className="status-icon">{partialPaymentType === 'discount' ? '🏷️' : '⚠️'}</span>
+                            <span>
+                              {partialPaymentType === 'discount' 
+                                ? <>مدفوع بخصم — الخصم: <span className="remaining-amount">{remaining} ﷼</span></>
+                                : <>دفع جزئي — المتبقي: <span className="remaining-amount">{remaining} ﷼</span></>
+                              }
+                            </span>
+                          </div>
+                        </>
                       );
                     } else if (paid >= total && total > 0) {
                       return (
