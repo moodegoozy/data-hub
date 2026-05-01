@@ -309,7 +309,7 @@ function App() {
     const paid = cityCustomers.filter((c) => {
       if (isFutureMonth) return false;
       const monthStatus = c.monthlyPayments?.[yearMonth];
-      return monthStatus === 'paid';
+      return monthStatus === 'paid' || monthStatus === 'discount';
     });
 
     const partial = cityCustomers.filter((c) => {
@@ -324,7 +324,13 @@ function App() {
       return monthStatus === 'pending' || monthStatus === undefined;
     });
 
-    const paidAmount = paid.reduce((sum, c) => sum + (c.subscriptionValue || 0), 0);
+    const paidAmount = paid.reduce((sum, c) => {
+      const monthStatus = c.monthlyPayments?.[yearMonth];
+      if (monthStatus === 'discount') {
+        return sum + (c.monthlyPartialAmounts?.[yearMonth] || c.subscriptionPaid || 0);
+      }
+      return sum + (c.subscriptionValue || 0);
+    }, 0);
     const partialAmount = partial.reduce((sum, c) => sum + (c.subscriptionPaid || 0), 0);
     const pendingAmount = pending.reduce((sum, c) => sum + (c.subscriptionValue || 0), 0);
 
@@ -3866,12 +3872,20 @@ function App() {
                   <tbody>
                     {revenuesData.paid.map(customer => {
                       const city = cities.find(c => c.id === customer.cityId);
+                      const yearMonth = `${revenuesYear}-${String(revenuesMonth).padStart(2, '0')}`;
+                      const monthStatus = customer.monthlyPayments?.[yearMonth];
+                      const collectedAmount = monthStatus === 'discount'
+                        ? (customer.monthlyPartialAmounts?.[yearMonth] || customer.subscriptionPaid || 0)
+                        : (customer.subscriptionValue || 0);
                       return (
                         <tr key={customer.id}>
                           <td>{customer.name}</td>
                           <td>{city?.name || '-'}</td>
                           <td>{customer.phone || '-'}</td>
-                          <td>{customer.subscriptionValue} ﷼</td>
+                          <td>
+                            {collectedAmount.toFixed(0)} ﷼
+                            {monthStatus === 'discount' ? ' (بخصم)' : ''}
+                          </td>
                         </tr>
                       );
                     })}
