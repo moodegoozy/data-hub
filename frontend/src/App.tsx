@@ -38,6 +38,7 @@ type Customer = {
   isSuspended?: boolean;
   suspendedDate?: string;
   isExempt?: boolean;
+  towerId?: string; // البرج التابع له العميل
 };
 
 type Expense = {
@@ -183,6 +184,7 @@ function App() {
   const [lap, setLap] = useState('');
   const [site, setSite] = useState('');
   const [notes, setNotes] = useState('');
+  const [customerTowerId, setCustomerTowerId] = useState(''); // البرج المختار في فورم إضافة العميل
   const [toastMessage, setToastMessage] = useState('');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik' | 'customers-db' | 'cards' | 'towers' | 'user-ip'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
@@ -363,6 +365,14 @@ function App() {
   const [towerDeletePassword, setTowerDeletePassword] = useState('');
   const [towerDeleteLoading, setTowerDeleteLoading] = useState(false);
   const [towerImagePreview, setTowerImagePreview] = useState<string | null>(null);
+  const [towerCustomersModal, setTowerCustomersModal] = useState<Tower | null>(null); // نافذة مستخدمي البرج
+  const [pendingEditTower, setPendingEditTower] = useState<Tower | null>(null); // البرج المنتظر تأكيد كلمة المرور لتعديله
+  const [towerEditPasswordModal, setTowerEditPasswordModal] = useState(false);
+  const [towerEditPassword, setTowerEditPassword] = useState('');
+  const [towerEditLoading, setTowerEditLoading] = useState(false);
+  const [pendingUnlinkCustomer, setPendingUnlinkCustomer] = useState<Customer | null>(null); // العميل المنتظر تأكيد كلمة المرور لإزالته من البرج
+  const [unlinkPassword, setUnlinkPassword] = useState('');
+  const [unlinkLoading, setUnlinkLoading] = useState(false);
 
   // user number & ip number
   const [selectedUserIpCities, setSelectedUserIpCities] = useState<string[]>([]);
@@ -1121,8 +1131,65 @@ function App() {
   };
 
   const openEditTower = (tower: Tower) => {
-    setEditingTower({ ...tower });
-    setShowEditTowerModal(true);
+    setPendingEditTower(tower);
+    setTowerEditPassword('');
+    setTowerEditPasswordModal(true);
+  };
+
+  // التحقق من كلمة مرور الحساب قبل فتح نافذة تعديل البرج
+  const confirmTowerEditPassword = async () => {
+    if (!pendingEditTower || !towerEditPassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+    setTowerEditLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
+      const credential = EmailAuthProvider.credential(user.email, towerEditPassword);
+      await reauthenticateWithCredential(user, credential);
+      setEditingTower({ ...pendingEditTower });
+      setShowEditTowerModal(true);
+      setTowerEditPasswordModal(false);
+      setPendingEditTower(null);
+      setTowerEditPassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في التحقق');
+        console.error(error);
+      }
+    } finally {
+      setTowerEditLoading(false);
+    }
+  };
+
+  // التحقق من كلمة مرور الحساب قبل إزالة عميل من البرج
+  const confirmUnlinkCustomer = async () => {
+    if (!pendingUnlinkCustomer || !unlinkPassword.trim()) {
+      setToastMessage('أدخل كلمة المرور');
+      return;
+    }
+    setUnlinkLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
+      const credential = EmailAuthProvider.credential(user.email, unlinkPassword);
+      await reauthenticateWithCredential(user, credential);
+      await setCustomerTower(pendingUnlinkCustomer, '');
+      setPendingUnlinkCustomer(null);
+      setUnlinkPassword('');
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setToastMessage('كلمة المرور غير صحيحة');
+      } else {
+        setToastMessage('خطأ في التحقق');
+        console.error(error);
+      }
+    } finally {
+      setUnlinkLoading(false);
+    }
   };
 
   const saveEditedTower = async () => {
@@ -1701,6 +1768,7 @@ function App() {
     if (lap) customerData.lap = lap;
     if (site) customerData.site = site;
     if (notes) customerData.notes = notes;
+    if (customerTowerId) customerData.towerId = customerTowerId;
 
     try {
       await setDoc(doc(db, 'customers', customerId), customerData);
@@ -1719,6 +1787,7 @@ function App() {
       setLap('');
       setSite('');
       setNotes('');
+      setCustomerTowerId('');
     } catch (error) {
       setToastMessage('خطأ في إضافة العميل');
       console.error(error);
@@ -2095,6 +2164,24 @@ function App() {
       setEditingCustomer(null);
     } catch (error) {
       setToastMessage('خطأ في تحديث البيانات');
+      console.error(error);
+    }
+  };
+
+  // ربط عميل ببرج أو فك ربطه (towerId فارغ = فك الربط) — يعيد حفظ مستند العميل كاملاً
+  const setCustomerTower = async (customer: Customer, towerId: string) => {
+    try {
+      const { id, ...rest } = customer;
+      const cleanData: Record<string, unknown> = {};
+      Object.entries(rest).forEach(([key, val]) => {
+        if (val !== undefined && val !== null && val !== '') cleanData[key] = val;
+      });
+      if (towerId) cleanData.towerId = towerId;
+      else delete cleanData.towerId;
+      await setDoc(doc(db, 'customers', id), cleanData);
+      setToastMessage(towerId ? `تم ربط ${customer.name} بالبرج` : `تم فك ربط ${customer.name}`);
+    } catch (error) {
+      setToastMessage('خطأ في تحديث العميل');
       console.error(error);
     }
   };
@@ -3075,7 +3162,13 @@ function App() {
                   </div>
                   <input type="text" placeholder="IP Number (الراوتر الأساسي)" value={ipNumber} onChange={(e) => setIpNumber(e.target.value)} />
                   <input type="text" placeholder="User Name (الراوتر الأساسي)" value={userName} onChange={(e) => setUserName(e.target.value)} />
-                  
+                  <select className="customer-tower-select" value={customerTowerId} onChange={(e) => setCustomerTowerId(e.target.value)}>
+                    <option value="">📡 البرج التابع له (اختياري)</option>
+                    {[...towers].sort((a, b) => a.deviceName.localeCompare(b.deviceName, 'ar')).map(t => (
+                      <option key={t.id} value={t.id}>{t.deviceName}{t.towerNumber ? ` (${t.towerNumber})` : ''}</option>
+                    ))}
+                  </select>
+
                   <div className="router-section">
                     <label>عدد الراوترات الإضافية:</label>
                     <input 
@@ -3152,6 +3245,10 @@ function App() {
                         </div>
                       </div>
                       <div className="small">{customer.userName || '-'} • {customer.phone || '-'} • {customer.ipNumber || '-'}</div>
+                      {customer.towerId && (() => {
+                        const t = towers.find(tw => tw.id === customer.towerId);
+                        return t ? <div className="small customer-tower-line">📡 {t.deviceName}{t.towerNumber ? ` (${t.towerNumber})` : ''}</div> : null;
+                      })()}
                       <div className="small">المتبقي: {remaining} ﷼</div>
                       <div className="actions">
                         <button onClick={() => generateSetupInvoicePDF(customer)} className="btn warning">تأسيس</button>
@@ -3966,6 +4063,15 @@ function App() {
                 <div className="edit-field">
                   <label>User Name</label>
                   <input type="text" value={editingCustomer.userName || ''} onChange={(e) => handleEditCustomer('userName', e.target.value)} />
+                </div>
+                <div className="edit-field">
+                  <label>البرج التابع له</label>
+                  <select value={editingCustomer.towerId || ''} onChange={(e) => handleEditCustomer('towerId', e.target.value)}>
+                    <option value="">— بدون برج —</option>
+                    {[...towers].sort((a, b) => a.deviceName.localeCompare(b.deviceName, 'ar')).map(t => (
+                      <option key={t.id} value={t.id}>{t.deviceName}{t.towerNumber ? ` (${t.towerNumber})` : ''}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="router-section">
                   <div className="edit-field">
@@ -5252,6 +5358,7 @@ function App() {
                 {sorted.map(tower => {
                   const city = cities.find(c => c.id === tower.cityId);
                   const st = TOWER_STATUS[tower.status];
+                  const linkedCount = customers.filter(c => c.towerId === tower.id).length;
                   return (
                     <div key={tower.id} className={`tower-card status-${st.cls}`}>
                       <div className="tower-card-image" onClick={() => tower.image && setTowerImagePreview(tower.image)} style={{ cursor: tower.image ? 'zoom-in' : 'default' }}>
@@ -5279,6 +5386,9 @@ function App() {
                           </div>
                         </div>
                         {tower.info && <p className="tower-card-info">{tower.info}</p>}
+                        <button className="tower-users-btn" onClick={() => setTowerCustomersModal(tower)}>
+                          👥 المستخدمون <span className="tower-users-count">{linkedCount}</span>
+                        </button>
                         <div className="tower-card-actions">
                           <button className="tower-action-status" onClick={() => cycleTowerStatus(tower)} title="تغيير حالة الجهاز">🔄 الحالة</button>
                           <button className="tower-action-edit" onClick={() => openEditTower(tower)}>✏️ تعديل</button>
@@ -5290,6 +5400,55 @@ function App() {
                 })}
               </div>
             )}
+
+            {/* قائمة انتظار تعيين البرج — المستخدمون غير المعيّنين لأي برج */}
+            {towers.length > 0 && (() => {
+              const unassigned = customers
+                .filter(c => !c.towerId && (!towerFilterCityId || c.cityId === towerFilterCityId))
+                .sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+              return (
+                <div className="tower-queue">
+                  <div className="tower-queue-header">
+                    <span className="tower-queue-title">🕒 مستخدمون بانتظار تعيين برج</span>
+                    <span className="tower-queue-count">{unassigned.length}</span>
+                  </div>
+                  {unassigned.length === 0 ? (
+                    <p className="tower-queue-empty">{towerFilterCityId ? 'لا يوجد مستخدمون بانتظار التعيين في هذه المدينة ✅' : 'كل المستخدمين معيّنون لأبراج ✅'}</p>
+                  ) : (
+                    <div className="tower-queue-list">
+                      {unassigned.map(c => {
+                        const cityName = cities.find(ct => ct.id === c.cityId)?.name;
+                        const cityTowers = towers
+                          .filter(t => t.cityId === c.cityId)
+                          .sort((a, b) => a.deviceName.localeCompare(b.deviceName, 'ar'));
+                        return (
+                          <div key={c.id} className="tower-queue-row">
+                            <div className="tower-queue-info">
+                              <strong>{c.name}</strong>
+                              <span className="small">{c.userName || '-'} • {c.ipNumber || '-'}{cityName ? ` • ${cityName}` : ''}</span>
+                            </div>
+                            {cityTowers.length === 0 ? (
+                              <span className="tower-queue-notower">لا أبراج في مدينته</span>
+                            ) : (
+                              <select
+                                className="tower-queue-select"
+                                value=""
+                                onChange={(e) => { if (e.target.value) setCustomerTower(c, e.target.value); }}
+                              >
+                                <option value="">— عيّن لبرج —</option>
+                                {cityTowers.map(t => (
+                                  <option key={t.id} value={t.id}>{t.deviceName}{t.towerNumber ? ` (${t.towerNumber})` : ''}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           );
         })()}
@@ -5391,6 +5550,99 @@ function App() {
           </div>
           );
         })()}
+
+      {/* Tower Customers Modal — مستخدمو البرج (عرض/إزالة فقط) */}
+      {towerCustomersModal && (() => {
+        const tower = towers.find(t => t.id === towerCustomersModal.id) || towerCustomersModal;
+        const linked = customers
+          .filter(c => c.towerId === tower.id)
+          .sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+        return (
+          <div className="modal-overlay" onClick={() => setTowerCustomersModal(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>مستخدمو البرج: {tower.deviceName}</h3>
+                <button onClick={() => setTowerCustomersModal(null)} className="modal-close">×</button>
+              </div>
+              <div className="modal-body">
+                <p className="small" style={{ opacity: 0.7, marginBottom: 12 }}>لإضافة مستخدم لهذا البرج، عيّنه من «قائمة انتظار تعيين البرج» في أسفل صفحة الأبراج.</p>
+                <div className="section-title-small">المستخدمون المرتبطون ({linked.length})</div>
+                {linked.length === 0 ? (
+                  <p className="small" style={{ opacity: 0.6 }}>لا يوجد مستخدمون مرتبطون بهذا البرج بعد</p>
+                ) : (
+                  <div className="tower-users-list">
+                    {linked.map(c => {
+                      const cityName = cities.find(ct => ct.id === c.cityId)?.name;
+                      return (
+                        <div key={c.id} className="tower-user-row">
+                          <div className="tower-user-info">
+                            <strong>{c.name}</strong>
+                            <span className="small">{c.userName || '-'} • {c.ipNumber || '-'}{cityName ? ` • ${cityName}` : ''}</span>
+                          </div>
+                          <button className="btn danger btn-sm" onClick={() => { setPendingUnlinkCustomer(c); setUnlinkPassword(''); }}>إزالة</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button onClick={() => setTowerCustomersModal(null)} className="btn secondary">إغلاق</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Unlink Customer Password Modal — كلمة مرور إزالة المستخدم من البرج */}
+      {pendingUnlinkCustomer && (
+        <div className="modal-overlay" onClick={() => { setPendingUnlinkCustomer(null); setUnlinkPassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد إزالة المستخدم</h3>
+              <button onClick={() => { setPendingUnlinkCustomer(null); setUnlinkPassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                لإزالة <strong>{pendingUnlinkCustomer.name}</strong> من البرج، أدخل كلمة المرور
+              </p>
+              <div className="edit-field">
+                <label>كلمة المرور</label>
+                <input type="password" placeholder="كلمة المرور" value={unlinkPassword} onChange={(e) => setUnlinkPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirmUnlinkCustomer()} autoFocus />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setPendingUnlinkCustomer(null); setUnlinkPassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmUnlinkCustomer} className="btn danger" disabled={unlinkLoading}>{unlinkLoading ? 'جاري التحقق...' : 'إزالة'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tower Edit Password Modal — كلمة مرور تعديل البرج */}
+      {towerEditPasswordModal && pendingEditTower && (
+        <div className="modal-overlay" onClick={() => { setTowerEditPasswordModal(false); setPendingEditTower(null); setTowerEditPassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>تأكيد تعديل البرج</h3>
+              <button onClick={() => { setTowerEditPasswordModal(false); setPendingEditTower(null); setTowerEditPassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '20px' }}>
+                لتعديل البرج <strong>{pendingEditTower.deviceName}</strong>، أدخل كلمة المرور
+              </p>
+              <div className="edit-field">
+                <label>كلمة المرور</label>
+                <input type="password" placeholder="كلمة المرور" value={towerEditPassword} onChange={(e) => setTowerEditPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirmTowerEditPassword()} autoFocus />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setTowerEditPasswordModal(false); setPendingEditTower(null); setTowerEditPassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmTowerEditPassword} className="btn primary" disabled={towerEditLoading}>{towerEditLoading ? 'جاري التحقق...' : 'متابعة'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Transfer Customer Modal */}
       {transferModal && transferCustomer && (
