@@ -6153,7 +6153,9 @@ function App() {
 
         {activeTab === 'whatsapp' && (() => {
           // حالة السداد: للشهر المختار إن حُدّد شهر، وإلا الحالة العامة للعميل
-          const statusOf = (c: Customer): 'paid' | 'partial' | 'discounted' | 'unpaid' => {
+          const statusOf = (c: Customer): 'paid' | 'partial' | 'discounted' | 'unpaid' | 'zero' => {
+            // فاتورته صفر — لا يُطالَب بسداد ولا يُحسب مسدداً
+            if (!c.subscriptionValue) return 'zero';
             if (waMonth > 0) {
               const key = `${waYear}-${String(waMonth).padStart(2, '0')}`;
               const m = c.monthlyPayments?.[key];
@@ -6184,12 +6186,14 @@ function App() {
           };
           const waLink = (c: Customer) => `https://wa.me/${normalizePhone(c.phone)}?text=${encodeURIComponent(buildMsg(c))}`;
           const toggleOne = (id: string) => setWaSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-          // العملاء الموقوفون مؤقتاً لا يُرسَل لهم حتى يُرفع الإيقاف
-          const sendableIds = waCustomers.filter(c => !c.isSuspended).map(c => c.id);
+          // لا يُرسَل للموقوفين مؤقتاً ولا لمن فاتورته صفر
+          const isBlocked = (c: Customer) => !!c.isSuspended || statusOf(c) === 'zero';
+          const sendableIds = waCustomers.filter(c => !isBlocked(c)).map(c => c.id);
           const allSelected = sendableIds.length > 0 && sendableIds.every(id => selectedSet.has(id));
           const toggleAll = () => setWaSelected(allSelected ? [] : sendableIds);
-          const selectedCustomers = waCustomers.filter(c => selectedSet.has(c.id) && !c.isSuspended);
+          const selectedCustomers = waCustomers.filter(c => selectedSet.has(c.id) && !isBlocked(c));
           const suspendedCount = waCustomers.filter(c => c.isSuspended).length;
+          const zeroCount = waCustomers.filter(c => !c.isSuspended && statusOf(c) === 'zero').length;
           const queueActive = waQueue.length > 0 && waQueuePos < waQueue.length;
           const startQueue = () => {
             const ids = selectedCustomers.map(c => c.id);
@@ -6298,6 +6302,7 @@ function App() {
                   <span className="wa-selected-count">
                     المحدد: {selectedCustomers.length}
                     {suspendedCount > 0 && <span className="wa-suspended-note"> • {suspendedCount} موقوف مؤقتاً (لا يُرسل لهم)</span>}
+                    {zeroCount > 0 && <span className="wa-zero-note"> • {zeroCount} فاتورته 0 (لا يُرسل لهم)</span>}
                   </span>
                 </div>
                 <div className="wa-list">
@@ -6305,17 +6310,21 @@ function App() {
                     const cityName = cities.find(ct => ct.id === c.cityId)?.name || '—';
                     const hasPhone = !!normalizePhone(c.phone);
                     const suspended = !!c.isSuspended;
+                    const zeroInvoice = !suspended && statusOf(c) === 'zero';
+                    const blocked = suspended || zeroInvoice;
                     return (
-                      <div key={c.id} className={`wa-row ${selectedSet.has(c.id) && !suspended ? 'selected' : ''} ${suspended ? 'suspended' : ''}`}>
+                      <div key={c.id} className={`wa-row ${selectedSet.has(c.id) && !blocked ? 'selected' : ''} ${suspended ? 'suspended' : ''} ${zeroInvoice ? 'zero-invoice' : ''}`}>
                         <label className="wa-checkbox-label">
-                          <input type="checkbox" checked={selectedSet.has(c.id) && !suspended} onChange={() => toggleOne(c.id)} disabled={suspended} />
+                          <input type="checkbox" checked={selectedSet.has(c.id) && !blocked} onChange={() => toggleOne(c.id)} disabled={blocked} />
                         </label>
                         <div className="wa-row-info">
-                          <strong>{suspended && '⛔ '}{c.name}</strong>
+                          <strong>{suspended && '⛔ '}{zeroInvoice && '🚫 '}{c.name}</strong>
                           <span className="small">{cityName} • {c.phone || 'بدون جوال'}</span>
                         </div>
                         {suspended ? (
                           <span className="wa-suspended-badge" title="لا يمكن الإرسال حتى يُرفع الإيقاف المؤقت">موقوف مؤقتاً</span>
+                        ) : zeroInvoice ? (
+                          <span className="wa-zero-badge" title="قيمة اشتراكه صفر — لا توجد فاتورة يُطالَب بها">فاتورته 0</span>
                         ) : hasPhone ? (
                           <a className="wa-send-btn" href={waLink(c)} target="_blank" rel="noopener noreferrer">📱 إرسال</a>
                         ) : (
