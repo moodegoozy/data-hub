@@ -26,5 +26,10 @@ service cloud.firestore {
     match /towers/{towerId} {
       allow read, write: if request.auth != null;
     }
+
+    // الشات العام — لا تُقيّد الحذف على صاحب الرسالة، وإلا تعطّل التنظيف التلقائي بعد ٣ أشهر
+    match /chat/{msgId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

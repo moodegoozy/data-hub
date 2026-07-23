@@ -1,7 +1,8 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, EmailAuthProvider, reauthenticateWithCredential, updateProfile, updatePassword, verifyBeforeUpdateEmail } from 'firebase/auth';
 import { collection, doc, getDocs, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+import { auth, db, storage } from './firebase';
 
 type City = {
   id: string;
@@ -157,6 +158,190 @@ const slotCounts = (slots: Slot[]) => ({
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+type ChatMessage = {
+  id: string;
+  senderEmail: string;
+  senderName?: string;
+  text?: string;
+  mediaUrl?: string;
+  mediaPath?: string; // مسار الملف في Storage (لحذفه لاحقاً)
+  mediaType?: 'image' | 'video' | 'file';
+  fileName?: string;
+  fileSize?: number;
+  createdAt: number;
+  pinned?: boolean; // المثبّتة لا تُحذف تلقائياً
+};
+
+// مدة الاحتفاظ برسائل الشات — ٣ أشهر
+const CHAT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+// مفتاح «آخر قراءة» — مستقل لكل حساب على هذا الجهاز
+const chatReadKey = (email?: string | null) => `servox_chat_lastread_${email || 'anon'}`;
+
+const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const fileIcon = (name?: string): string => {
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  if (['pdf'].includes(ext)) return '📕';
+  if (['doc', 'docx'].includes(ext)) return '📘';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return '📗';
+  if (['ppt', 'pptx'].includes(ext)) return '📙';
+  if (['zip', 'rar', '7z'].includes(ext)) return '🗜️';
+  if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return '🎵';
+  if (['txt', 'md'].includes(ext)) return '📄';
+  return '📎';
+};
+
+const isMobileDevice = () => /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+// iOS لا يعرض «حفظ الفيديو/الصورة» إلا إذا عرف النوع من الـ MIME والامتداد
+const MIME_EXT: Record<string, string> = {
+  'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm',
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic',
+};
+
+const prepareFile = async (url: string, name: string, kind?: 'image' | 'video' | 'file'): Promise<File | null> => {
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const blob = await res.blob();
+  let type = blob.type;
+  if (!type || type === 'application/octet-stream') {
+    type = kind === 'video' ? 'video/mp4' : kind === 'image' ? 'image/jpeg' : 'application/octet-stream';
+  }
+  let fileName = name || 'file';
+  if (!/\.[a-z0-9]{2,5}$/i.test(fileName)) {
+    const ext = MIME_EXT[type] || (kind === 'video' ? 'mp4' : kind === 'image' ? 'jpg' : '');
+    if (ext) fileName = `${fileName}.${ext}`;
+  }
+  return new File([blob], fileName, { type });
+};
+
+const anchorDownload = (file: File) => {
+  const objUrl = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = objUrl; a.download = file.name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(objUrl), 10000);
+};
+
+// ===== رسائل واتساب للعملاء =====
+// القوالب تستخدم متغيّرات: {الاسم} {المدينة} {الجوال} {المبلغ}
+const WA_TEMPLATES: { id: string; title: string; body: string }[] = [
+  { id: 'reminder', title: 'تذكير ودّي بالسداد',
+    body: 'مرحباً {الاسم} 👋\nنذكّركم بسداد اشتراك الإنترنت بمبلغ {المبلغ} ﷼.\nنشكر لكم تعاونكم 🌐' },
+  { id: 'due', title: 'مبلغ مستحق',
+    body: 'عميلنا العزيز {الاسم} ({المدينة})\nلديكم مبلغ مستحق قدره {المبلغ} ﷼ على اشتراك الإنترنت.\nيرجى السداد في أقرب وقت، وشكراً لكم.' },
+  { id: 'thanks', title: 'شكر بعد السداد',
+    body: 'شكراً لك {الاسم} 🌟\nتم استلام سداد اشتراككم بنجاح. نتمنى لكم تجربة إنترنت ممتازة 🌐' },
+];
+const WA_CUSTOM_KEY = 'servox_wa_custom_template';
+
+// تحويل رقم الجوال إلى صيغة واتساب الدولية (السعودية افتراضاً)
+const normalizePhone = (raw?: string): string => {
+  if (!raw) return '';
+  let d = raw.replace(/\D/g, '');
+  if (d.startsWith('00')) d = d.slice(2);
+  if (d.startsWith('966')) return d;
+  if (d.startsWith('0')) return '966' + d.slice(1);
+  if (d.length === 9 && d.startsWith('5')) return '966' + d;
+  return d;
+};
+
+// تعبئة متغيّرات القالب ببيانات العميل
+const fillTemplate = (body: string, vars: { name: string; city: string; phone: string; amount: string }): string =>
+  body.replace(/\{الاسم\}/g, vars.name)
+      .replace(/\{المدينة\}/g, vars.city)
+      .replace(/\{الجوال\}/g, vars.phone)
+      .replace(/\{المبلغ\}/g, vars.amount);
+
+// ===== الدخول بالبصمة / Face ID (WebAuthn + امتداد PRF) =====
+// البصمة تشتقّ مفتاحاً من عتاد الجهاز يُشفَّر به كلمة المرور محلياً (AES-GCM)،
+// فلا تُفكّ إلا بنجاح البصمة على هذا الجهاز نفسه. التخزين محلي فقط (localStorage).
+const BIO_KEY = 'servox_biometric';
+type BioStore = { credId: string; email: string; salt: string; iv: string; ct: string };
+
+const bufToB64 = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const b64ToBuf = (b64: string): ArrayBuffer => Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
+
+const getBioStore = (): BioStore | null => {
+  try { const s = localStorage.getItem(BIO_KEY); return s ? (JSON.parse(s) as BioStore) : null; } catch { return null; }
+};
+const clearBioStore = () => localStorage.removeItem(BIO_KEY);
+
+// هل يدعم الجهاز/المتصفح مُصادقاً حيوياً (Face ID / Windows Hello / بصمة)؟
+const isBioSupported = async (): Promise<boolean> => {
+  try {
+    if (!window.PublicKeyCredential) return false;
+    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch { return false; }
+};
+
+const aesKeyFromPrf = (prf: ArrayBuffer) =>
+  crypto.subtle.importKey('raw', prf, 'AES-GCM', false, ['encrypt', 'decrypt']);
+
+// استدعاء get() للحصول على ناتج PRF (بصمة) من مُعرّف بيانات الاعتماد
+const evalPrf = async (credId: string, salt: Uint8Array): Promise<ArrayBuffer | null> => {
+  const assertion = (await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId: window.location.hostname,
+      allowCredentials: [{ type: 'public-key', id: b64ToBuf(credId) }],
+      userVerification: 'required',
+      timeout: 60000,
+      extensions: { prf: { eval: { first: salt } } } as any,
+    },
+  })) as PublicKeyCredential | null;
+  if (!assertion) return null;
+  const results = (assertion.getClientExtensionResults() as any).prf?.results?.first as ArrayBuffer | undefined;
+  return results ?? null;
+};
+
+// تسجيل بصمة جديدة على هذا الجهاز + تشفير كلمة المرور بها
+const registerBiometric = async (email: string, password: string): Promise<void> => {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const cred = (await navigator.credentials.create({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: 'SERVOX', id: window.location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: email, displayName: email },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+      timeout: 60000,
+      extensions: { prf: { eval: { first: salt } } } as any,
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error('no-cred');
+  const credId = bufToB64(cred.rawId);
+
+  // بعض المتصفحات تُرجع ناتج PRF في create()، وبعضها يحتاج get() إضافياً
+  let prf = ((cred.getClientExtensionResults() as any).prf?.results?.first as ArrayBuffer | undefined) ?? null;
+  if (!prf) prf = await evalPrf(credId, salt);
+  if (!prf) throw new Error('no-prf');
+
+  const key = await aesKeyFromPrf(prf);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(password));
+
+  const store: BioStore = { credId, email, salt: bufToB64(salt.buffer), iv: bufToB64(iv.buffer), ct: bufToB64(ct) };
+  localStorage.setItem(BIO_KEY, JSON.stringify(store));
+};
+
+// فك التشفير واسترجاع بيانات الدخول عبر البصمة
+const unlockBiometric = async (): Promise<{ email: string; password: string } | null> => {
+  const store = getBioStore();
+  if (!store) return null;
+  const prf = await evalPrf(store.credId, new Uint8Array(b64ToBuf(store.salt)));
+  if (!prf) throw new Error('no-prf');
+  const key = await aesKeyFromPrf(prf);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(store.iv)) }, key, b64ToBuf(store.ct));
+  return { email: store.email, password: new TextDecoder().decode(pt) };
+};
+
 const formatDate = (value: string) => {
   const date = new Date(value);
   return date.toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' });
@@ -186,7 +371,7 @@ function App() {
   const [notes, setNotes] = useState('');
   const [customerTowerId, setCustomerTowerId] = useState(''); // البرج المختار في فورم إضافة العميل
   const [toastMessage, setToastMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik' | 'customers-db' | 'cards' | 'towers' | 'user-ip'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'yearly' | 'revenues' | 'discounts' | 'suspended' | 'expenses' | 'microtik' | 'customers-db' | 'cards' | 'towers' | 'user-ip' | 'whatsapp'>('dashboard');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearlyCityId, setYearlyCityId] = useState<string | null>(null);
   const [invoiceCityId, setInvoiceCityId] = useState<string | null>(null);
@@ -204,6 +389,68 @@ function App() {
   const [paymentMonth, setPaymentMonth] = useState(new Date().getMonth() + 1);
   const [paymentYear, setPaymentYear] = useState(new Date().getFullYear());
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('datahub-theme') === 'dark');
+  // الدخول بالبصمة / Face ID
+  const [bioAvailable, setBioAvailable] = useState(false); // الجهاز يدعم مُصادقاً حيوياً
+  const [bioEnabled, setBioEnabled] = useState(() => getBioStore() !== null); // بصمة مسجّلة على هذا الجهاز
+  const [bioBusy, setBioBusy] = useState(false);
+  const [bioSetupModal, setBioSetupModal] = useState(false);
+  const [bioSetupPassword, setBioSetupPassword] = useState('');
+  // صفحة البروفايل
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileName, setProfileName] = useState('');
+  const [profileNameBusy, setProfileNameBusy] = useState(false);
+  const [profileNewEmail, setProfileNewEmail] = useState('');
+  const [profileEmailPassword, setProfileEmailPassword] = useState('');
+  const [profileEmailBusy, setProfileEmailBusy] = useState(false);
+  const [profileCurrentPassword, setProfileCurrentPassword] = useState('');
+  const [profileNewPassword, setProfileNewPassword] = useState('');
+  const [profileConfirmPassword, setProfileConfirmPassword] = useState('');
+  const [profilePasswordBusy, setProfilePasswordBusy] = useState(false);
+  // إظهار/إخفاء كلمات المرور في البروفايل
+  const [showProfileEmailPw, setShowProfileEmailPw] = useState(false);
+  const [showProfileCurPw, setShowProfileCurPw] = useState(false);
+  const [showProfileNewPw, setShowProfileNewPw] = useState(false);
+  const [showProfileConfPw, setShowProfileConfPw] = useState(false);
+  const [revealedCurrentPassword, setRevealedCurrentPassword] = useState<string | null>(null);
+  const [revealBusy, setRevealBusy] = useState(false);
+  // تبويب واتساب
+  const [waCityId, setWaCityId] = useState<string | null>(null);
+  const [waStatusFilter, setWaStatusFilter] = useState<'all' | 'paid' | 'unpaid' | 'partial'>('unpaid');
+  const [waSelected, setWaSelected] = useState<string[]>([]);
+  const [waTemplateId, setWaTemplateId] = useState<string>(WA_TEMPLATES[0].id);
+  const [waCustomTemplate, setWaCustomTemplate] = useState<string>(() => localStorage.getItem(WA_CUSTOM_KEY) || 'مرحباً {الاسم} 👋\nنذكّركم بسداد مبلغ {المبلغ} ﷼ لمدينة {المدينة}.');
+  const [waAmount, setWaAmount] = useState('');
+  const [waQueue, setWaQueue] = useState<string[]>([]);
+  const [waQueuePos, setWaQueuePos] = useState(0);
+  const [waMonth, setWaMonth] = useState(0); // 0 = الحالة العامة، 1-12 = شهر محدد
+  const [waYear, setWaYear] = useState(new Date().getFullYear());
+  const [waSearch, setWaSearch] = useState('');
+  // الشات العام
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatUploading, setChatUploading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatCleanupDone = useRef(false);
+  const [chatLastRead, setChatLastRead] = useState(0);
+  const [chatDeleteConfirm, setChatDeleteConfirm] = useState<ChatMessage | null>(null);
+  const [chatUploadProgress, setChatUploadProgress] = useState(0);
+  const [chatUploadName, setChatUploadName] = useState('');
+  const [chatDownloadingId, setChatDownloadingId] = useState<string | null>(null);
+  const [pendingSave, setPendingSave] = useState<{ file: File; url: string } | null>(null);
+
+  // تعليم رسائل الشات كمقروءة للحساب الحالي
+  const markChatRead = () => {
+    const now = Date.now();
+    localStorage.setItem(chatReadKey(auth.currentUser?.email), String(now));
+    setChatLastRead(now);
+  };
+
+  // عدد الرسائل غير المقروءة — رسائل الآخرين الأحدث من آخر قراءة
+  const chatUnreadCount = useMemo(
+    () => chatMessages.filter(m => m.createdAt > chatLastRead && m.senderEmail !== auth.currentUser?.email).length,
+    [chatMessages, chatLastRead]
+  );
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{type: 'city' | 'customer'; id: string; name: string} | null>(null);
@@ -712,8 +959,8 @@ function App() {
     }
   };
 
-  const confirmDiscountDelete = async () => {
-    if (!discountDeleteConfirm || !discountDeletePassword.trim()) {
+  const confirmDiscountDelete = async (pwOverride?: string) => {
+    if (!discountDeleteConfirm || !(pwOverride ?? discountDeletePassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -727,7 +974,7 @@ function App() {
       }
 
       // التحقق من كلمة المرور
-      const credential = EmailAuthProvider.credential(user.email, discountDeletePassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? discountDeletePassword);
       await reauthenticateWithCredential(user, credential);
 
       // تنفيذ إزالة الخصم
@@ -931,8 +1178,8 @@ function App() {
   };
 
   // دالة تأكيد تعديل المصروفات/الإيرادات مع كلمة المرور
-  const confirmEditFinance = async () => {
-    if ((!pendingEditExpense && !pendingEditIncome) || !editFinancePassword.trim()) {
+  const confirmEditFinance = async (pwOverride?: string) => {
+    if ((!pendingEditExpense && !pendingEditIncome) || !(pwOverride ?? editFinancePassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -946,7 +1193,7 @@ function App() {
         return;
       }
 
-      const credential = EmailAuthProvider.credential(user.email, editFinancePassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? editFinancePassword);
       await reauthenticateWithCredential(user, credential);
 
       // فتح modal التعديل
@@ -996,13 +1243,13 @@ function App() {
     }
   };
 
-  const confirmDeleteCard = async () => {
-    if (!cardDeleteConfirm || !cardDeletePassword.trim()) { setToastMessage('أدخل كلمة المرور'); return; }
+  const confirmDeleteCard = async (pwOverride?: string) => {
+    if (!cardDeleteConfirm || !(pwOverride ?? cardDeletePassword).trim()) { setToastMessage('أدخل كلمة المرور'); return; }
     setCardDeleteLoading(true);
     try {
       const user = auth.currentUser;
       if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
-      const credential = EmailAuthProvider.credential(user.email, cardDeletePassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? cardDeletePassword);
       await reauthenticateWithCredential(user, credential);
       await deleteDoc(doc(db, 'cards', cardDeleteConfirm.id));
       setCards(cards.filter(c => c.id !== cardDeleteConfirm.id));
@@ -1137,8 +1384,8 @@ function App() {
   };
 
   // التحقق من كلمة مرور الحساب قبل فتح نافذة تعديل البرج
-  const confirmTowerEditPassword = async () => {
-    if (!pendingEditTower || !towerEditPassword.trim()) {
+  const confirmTowerEditPassword = async (pwOverride?: string) => {
+    if (!pendingEditTower || !(pwOverride ?? towerEditPassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -1146,7 +1393,7 @@ function App() {
     try {
       const user = auth.currentUser;
       if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
-      const credential = EmailAuthProvider.credential(user.email, towerEditPassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? towerEditPassword);
       await reauthenticateWithCredential(user, credential);
       setEditingTower({ ...pendingEditTower });
       setShowEditTowerModal(true);
@@ -1166,8 +1413,8 @@ function App() {
   };
 
   // التحقق من كلمة مرور الحساب قبل إزالة عميل من البرج
-  const confirmUnlinkCustomer = async () => {
-    if (!pendingUnlinkCustomer || !unlinkPassword.trim()) {
+  const confirmUnlinkCustomer = async (pwOverride?: string) => {
+    if (!pendingUnlinkCustomer || !(pwOverride ?? unlinkPassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -1175,7 +1422,7 @@ function App() {
     try {
       const user = auth.currentUser;
       if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
-      const credential = EmailAuthProvider.credential(user.email, unlinkPassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? unlinkPassword);
       await reauthenticateWithCredential(user, credential);
       await setCustomerTower(pendingUnlinkCustomer, '');
       setPendingUnlinkCustomer(null);
@@ -1207,13 +1454,13 @@ function App() {
     }
   };
 
-  const confirmDeleteTower = async () => {
-    if (!towerDeleteConfirm || !towerDeletePassword.trim()) { setToastMessage('أدخل كلمة المرور'); return; }
+  const confirmDeleteTower = async (pwOverride?: string) => {
+    if (!towerDeleteConfirm || !(pwOverride ?? towerDeletePassword).trim()) { setToastMessage('أدخل كلمة المرور'); return; }
     setTowerDeleteLoading(true);
     try {
       const user = auth.currentUser;
       if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
-      const credential = EmailAuthProvider.credential(user.email, towerDeletePassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? towerDeletePassword);
       await reauthenticateWithCredential(user, credential);
       await deleteDoc(doc(db, 'towers', towerDeleteConfirm.id));
       setToastMessage(`تم حذف البرج: ${towerDeleteConfirm.deviceName}`);
@@ -1538,8 +1785,8 @@ function App() {
   };
 
   // دالة تأكيد الحذف للمصروفات والإيرادات
-  const confirmFinanceDelete = async () => {
-    if (!financeDeleteConfirm || !financeDeletePassword.trim()) {
+  const confirmFinanceDelete = async (pwOverride?: string) => {
+    if (!financeDeleteConfirm || !(pwOverride ?? financeDeletePassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -1553,7 +1800,7 @@ function App() {
       }
 
       // التحقق من كلمة المرور
-      const credential = EmailAuthProvider.credential(user.email, financeDeletePassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? financeDeletePassword);
       await reauthenticateWithCredential(user, credential);
 
       // تنفيذ الحذف
@@ -1576,6 +1823,160 @@ function App() {
       setFinanceDeleteLoading(false);
     }
   };
+
+  // === الشات العام ===
+  // إرسال رسالة نصية
+  const sendChatMessage = async () => {
+    const user = auth.currentUser;
+    if (!user || !chatInput.trim()) return;
+    const text = chatInput.trim();
+    setChatInput('');
+    try {
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      await setDoc(doc(db, 'chat', id), {
+        senderEmail: user.email || '', senderName: user.displayName || '', text, createdAt: Date.now(),
+      });
+    } catch (e) { setToastMessage('تعذّر إرسال الرسالة'); console.error(e); }
+  };
+
+  // إرسال صورة أو فيديو أو أي ملف (يُرفع إلى Firebase Storage مع تتبّع التقدّم)
+  const sendChatMedia = async (file?: File) => {
+    if (!file) return;
+    const user = auth.currentUser;
+    if (!user) return;
+    const isVideo = file.type.startsWith('video');
+    const isImage = file.type.startsWith('image');
+    const kind: 'image' | 'video' | 'file' = isVideo ? 'video' : isImage ? 'image' : 'file';
+    const maxMB = isVideo ? 50 : isImage ? 10 : 25;
+    if (file.size > maxMB * 1024 * 1024) {
+      setToastMessage(`الحجم أكبر من ${maxMB}MB (${kind === 'video' ? 'فيديو' : kind === 'image' ? 'صورة' : 'ملف'})`);
+      return;
+    }
+    setChatUploading(true); setChatUploadProgress(0); setChatUploadName(file.name);
+    try {
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const path = `chat/${id}_${file.name.replace(/[^\w.\-]/g, '_')}`;
+      const sRef = storageRef(storage, path);
+      const task = uploadBytesResumable(sRef, file);
+      task.on('state_changed', (snap) => {
+        setChatUploadProgress(snap.totalBytes ? Math.round((snap.bytesTransferred / snap.totalBytes) * 100) : 0);
+      });
+      await task;
+      const url = await getDownloadURL(task.snapshot.ref);
+      await setDoc(doc(db, 'chat', id), {
+        senderEmail: user.email || '', senderName: user.displayName || '',
+        mediaUrl: url, mediaPath: path, mediaType: kind,
+        fileName: file.name, fileSize: file.size, createdAt: Date.now(),
+      });
+    } catch (e) {
+      setToastMessage('تعذّر رفع الملف — تأكد من تفعيل Firebase Storage');
+      console.error(e);
+    } finally {
+      setChatUploading(false); setChatUploadProgress(0); setChatUploadName('');
+    }
+  };
+
+  // تحميل مرفق — على الجوال يفتح قائمة النظام لحفظه في الصور/الملفات
+  const handleDownload = async (m: ChatMessage, fallbackName: string) => {
+    if (!m.mediaUrl) return;
+    const url = m.mediaUrl;
+    setChatDownloadingId(m.id);
+    try {
+      const file = await prepareFile(url, m.fileName || fallbackName, m.mediaType);
+      if (!file) { window.open(url, '_blank'); return; }
+      const nav = navigator as any;
+      if (isMobileDevice() && nav.canShare?.({ files: [file] })) {
+        try {
+          await nav.share({ files: [file], title: file.name });
+        } catch (err: any) {
+          if (err?.name === 'AbortError') return;
+          setPendingSave({ file, url }); // Safari أبطل الإيماءة ⇒ زر حفظ بلمسة جديدة
+        }
+        return;
+      }
+      anchorDownload(file);
+    } catch { window.open(url, '_blank'); }
+    finally { setChatDownloadingId(null); }
+  };
+
+  const savePendingFile = async () => {
+    if (!pendingSave) return;
+    const nav = navigator as any;
+    try { await nav.share({ files: [pendingSave.file], title: pendingSave.file.name }); }
+    catch (err: any) { if (err?.name !== 'AbortError') window.open(pendingSave.url, '_blank'); }
+    finally { setPendingSave(null); }
+  };
+
+  // حذف رسالة أرسلها المستخدم نفسه (مع ملف الوسائط)
+  const deleteChatMessage = async (m: ChatMessage) => {
+    try {
+      if (m.mediaUrl || m.mediaPath) {
+        try { await deleteObject(storageRef(storage, m.mediaPath || m.mediaUrl!)); }
+        catch (err) { console.warn('تعذّر حذف ملف الوسائط', err); }
+      }
+      await deleteDoc(doc(db, 'chat', m.id));
+      setChatDeleteConfirm(null);
+      setToastMessage('تم حذف الرسالة');
+    } catch (e) { setToastMessage('تعذّر حذف الرسالة'); console.error(e); }
+  };
+
+  // تثبيت/إلغاء تثبيت رسالة — المثبّتة محميّة من الحذف التلقائي
+  const toggleChatPin = async (m: ChatMessage) => {
+    try {
+      const { id, ...rest } = m;
+      const data: Record<string, unknown> = {};
+      Object.entries(rest).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') data[k] = v; });
+      if (m.pinned) delete data.pinned; else data.pinned = true;
+      await setDoc(doc(db, 'chat', id), data);
+      setToastMessage(m.pinned ? 'أُلغي التثبيت — ستُحذف تلقائياً بعد ٣ أشهر' : '📌 تم التثبيت — لن تُحذف تلقائياً');
+    } catch (e) { setToastMessage('تعذّر تغيير التثبيت'); console.error(e); }
+  };
+
+  // حذف الرسائل الأقدم من ٣ أشهر (عدا المثبّتة) مع ملفات الوسائط
+  const cleanupOldChat = async (messages: ChatMessage[]) => {
+    const cutoff = Date.now() - CHAT_RETENTION_MS;
+    const expired = messages.filter(m => !m.pinned && m.createdAt < cutoff);
+    if (expired.length === 0) return;
+    let removed = 0;
+    for (const m of expired) {
+      try {
+        if (m.mediaUrl || m.mediaPath) {
+          try { await deleteObject(storageRef(storage, m.mediaPath || m.mediaUrl!)); }
+          catch (err) { console.warn('تعذّر حذف ملف الوسائط', err); }
+        }
+        await deleteDoc(doc(db, 'chat', m.id));
+        removed++;
+      } catch (e) { console.error('تعذّر حذف رسالة قديمة', e); }
+    }
+    if (removed > 0) setToastMessage(`🧹 حُذفت ${removed} رسالة أقدم من ٣ أشهر`);
+  };
+
+  // فحص دعم البصمة على هذا الجهاز
+  useEffect(() => {
+    isBioSupported().then(setBioAvailable);
+  }, []);
+
+  // التمرير لآخر رسالة + اعتبارها مقروءة عند فتح الشات
+  useEffect(() => {
+    if (showChat) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      markChatRead();
+    }
+  }, [chatMessages, showChat]);
+
+  // تحميل آخر قراءة للحساب الحالي
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const saved = Number(localStorage.getItem(chatReadKey(auth.currentUser?.email)) || 0);
+    setChatLastRead(saved);
+  }, [isAuthenticated]);
+
+  // تنظيف الرسائل الأقدم من ٣ أشهر — مرة واحدة بعد التحميل
+  useEffect(() => {
+    if (!isAuthenticated || chatCleanupDone.current || chatMessages.length === 0) return;
+    chatCleanupDone.current = true;
+    cleanupOldChat(chatMessages);
+  }, [isAuthenticated, chatMessages]);
 
   // Listen for auth state changes (persist login on refresh)
   useEffect(() => {
@@ -1629,6 +2030,13 @@ function App() {
       setTowers(towersData);
     });
 
+    // Listen to chat collection
+    const unsubscribeChat = onSnapshot(collection(db, 'chat'), (snapshot) => {
+      const msgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as ChatMessage));
+      msgs.sort((a, b) => a.createdAt - b.createdAt);
+      setChatMessages(msgs);
+    });
+
     return () => {
       unsubscribeCities();
       unsubscribeCustomers();
@@ -1636,6 +2044,7 @@ function App() {
       unsubscribeIncomes();
       unsubscribeCards();
       unsubscribeTowers();
+      unsubscribeChat();
     };
   }, [isAuthenticated]);
 
@@ -1809,8 +2218,8 @@ function App() {
     }
   };
 
-  const confirmDelete = async () => {
-    if (!deleteConfirm || !deletePassword.trim()) {
+  const confirmDelete = async (pwOverride?: string) => {
+    if (!deleteConfirm || !(pwOverride ?? deletePassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -1824,7 +2233,7 @@ function App() {
       }
 
       // التحقق من كلمة المرور
-      const credential = EmailAuthProvider.credential(user.email, deletePassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? deletePassword);
       await reauthenticateWithCredential(user, credential);
 
       // تنفيذ الحذف
@@ -2020,8 +2429,8 @@ function App() {
     setTransferModal(true);
   };
 
-  const confirmTransferCustomer = async () => {
-    if (!transferCustomer || !transferCityId || !transferPassword.trim()) {
+  const confirmTransferCustomer = async (pwOverride?: string) => {
+    if (!transferCustomer || !transferCityId || !(pwOverride ?? transferPassword).trim()) {
       setToastMessage('يرجى اختيار المدينة وإدخال كلمة المرور');
       return;
     }
@@ -2040,7 +2449,7 @@ function App() {
       }
 
       // التحقق من كلمة المرور
-      const credential = EmailAuthProvider.credential(user.email, transferPassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? transferPassword);
       await reauthenticateWithCredential(user, credential);
 
       // نقل العميل للمدينة الجديدة
@@ -2067,8 +2476,8 @@ function App() {
     }
   };
 
-  const confirmEditPassword = async () => {
-    if (!pendingEditCustomer || !editPassword.trim()) {
+  const confirmEditPassword = async (pwOverride?: string) => {
+    if (!pendingEditCustomer || !(pwOverride ?? editPassword).trim()) {
       setToastMessage('أدخل كلمة المرور');
       return;
     }
@@ -2081,7 +2490,7 @@ function App() {
         return;
       }
 
-      const credential = EmailAuthProvider.credential(user.email, editPassword);
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? editPassword);
       await reauthenticateWithCredential(user, credential);
 
       // فتح نافذة التعديل
@@ -2476,6 +2885,177 @@ function App() {
     }
   };
 
+  // تسجيل الدخول بالبصمة (فك تشفير بيانات الدخول المحفوظة على الجهاز)
+  const handleBioLogin = async () => {
+    setBioBusy(true);
+    try {
+      const creds = await unlockBiometric();
+      if (!creds) { setToastMessage('لا توجد بصمة مسجّلة على هذا الجهاز'); return; }
+      await signInWithEmailAndPassword(auth, creds.email, creds.password);
+      setToastMessage('تم الدخول بالبصمة');
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') setToastMessage('أُلغيت عملية البصمة');
+      else if (e?.code === 'auth/wrong-password' || e?.code === 'auth/invalid-credential') {
+        clearBioStore();
+        setBioEnabled(false);
+        setToastMessage('تغيّرت كلمة المرور — أعد تفعيل البصمة');
+      } else if (e?.message === 'no-prf') setToastMessage('متصفحك لا يدعم الدخول الآمن بالبصمة');
+      else setToastMessage('تعذّر الدخول بالبصمة');
+      console.error(e);
+    } finally {
+      setBioBusy(false);
+    }
+  };
+
+  // تفعيل البصمة على هذا الجهاز (يتحقق من كلمة المرور ثم يشفّرها بالبصمة)
+  const confirmEnableBiometric = async () => {
+    const user = auth.currentUser;
+    if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
+    if (!bioSetupPassword.trim()) { setToastMessage('أدخل كلمة المرور'); return; }
+    setBioBusy(true);
+    try {
+      const credential = EmailAuthProvider.credential(user.email, bioSetupPassword);
+      await reauthenticateWithCredential(user, credential);
+      await registerBiometric(user.email, bioSetupPassword);
+      setBioEnabled(true);
+      setBioSetupModal(false);
+      setBioSetupPassword('');
+      setToastMessage('تم تفعيل الدخول بالبصمة على هذا الجهاز');
+    } catch (e: any) {
+      if (e?.code === 'auth/wrong-password' || e?.code === 'auth/invalid-credential') setToastMessage('كلمة المرور غير صحيحة');
+      else if (e?.name === 'NotAllowedError') setToastMessage('أُلغيت عملية البصمة');
+      else if (e?.message === 'no-prf') setToastMessage('متصفحك لا يدعم الدخول الآمن بالبصمة (PRF)');
+      else setToastMessage('تعذّر تفعيل البصمة');
+      console.error(e);
+    } finally {
+      setBioBusy(false);
+    }
+  };
+
+  // إلغاء البصمة من هذا الجهاز
+  const disableBiometric = () => {
+    clearBioStore();
+    setBioEnabled(false);
+    setToastMessage('تم إلغاء الدخول بالبصمة من هذا الجهاز');
+  };
+
+  // جلب كلمة المرور المخزّنة عبر البصمة — بديل عن كتابتها يدوياً في النوافذ المحمية
+  const getBioPassword = async (): Promise<string | null> => {
+    if (!bioEnabled) { setToastMessage('فعّل الدخول بالبصمة أولاً من البروفايل'); return null; }
+    setBioBusy(true);
+    try {
+      const creds = await unlockBiometric();
+      if (!creds) { setToastMessage('لا توجد بصمة مسجّلة على هذا الجهاز'); return null; }
+      return creds.password;
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') setToastMessage('أُلغيت عملية البصمة');
+      else if (e?.message === 'no-prf') setToastMessage('متصفحك لا يدعم البصمة الآمنة');
+      else setToastMessage('تعذّر التحقق بالبصمة');
+      console.error(e);
+      return null;
+    } finally { setBioBusy(false); }
+  };
+
+  // زر «تأكيد بالبصمة» — يُعرض داخل كل نافذة تطلب كلمة مرور الحساب
+  const bioConfirmBtn = (run: (pw: string) => void) => (
+    bioAvailable && bioEnabled ? (
+      <button type="button" className="btn bio-confirm-btn" disabled={bioBusy}
+        title="تأكيد ببصمة الوجه بدل كتابة كلمة المرور"
+        onClick={async () => { const pw = await getBioPassword(); if (pw) run(pw); }}>
+        {bioBusy ? '...' : '👆 بالبصمة'}
+      </button>
+    ) : null
+  );
+
+  const openProfile = () => {
+    setProfileName(auth.currentUser?.displayName || '');
+    setProfileNewEmail(''); setProfileEmailPassword('');
+    setProfileCurrentPassword(''); setProfileNewPassword(''); setProfileConfirmPassword('');
+    setRevealedCurrentPassword(null);
+    setShowProfileEmailPw(false); setShowProfileCurPw(false); setShowProfileNewPw(false); setShowProfileConfPw(false);
+    setShowProfileModal(true);
+  };
+
+  const closeProfile = () => {
+    setShowProfileModal(false);
+    setRevealedCurrentPassword(null);
+  };
+
+  // عرض كلمة المرور الحالية عبر البصمة (تُفكّ من التخزين المشفّر على الجهاز)
+  const revealCurrentPassword = async () => {
+    setRevealBusy(true);
+    try {
+      const creds = await unlockBiometric();
+      if (!creds) { setToastMessage('لا توجد بصمة مسجّلة على هذا الجهاز'); return; }
+      setRevealedCurrentPassword(creds.password);
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') setToastMessage('أُلغيت عملية البصمة');
+      else if (e?.message === 'no-prf') setToastMessage('متصفحك لا يدعم الكشف الآمن بالبصمة');
+      else setToastMessage('تعذّر عرض كلمة المرور');
+      console.error(e);
+    } finally {
+      setRevealBusy(false);
+    }
+  };
+
+  // حفظ اسم الحساب
+  const saveProfileName = async () => {
+    const user = auth.currentUser;
+    if (!user) { setToastMessage('خطأ في المصادقة'); return; }
+    if (!profileName.trim()) { setToastMessage('أدخل الاسم'); return; }
+    setProfileNameBusy(true);
+    try {
+      await updateProfile(user, { displayName: profileName.trim() });
+      setToastMessage('تم تحديث الاسم');
+    } catch (e) { setToastMessage('تعذّر تحديث الاسم'); console.error(e); }
+    finally { setProfileNameBusy(false); }
+  };
+
+  // تغيير البريد (يرسل رابط تأكيد للبريد الجديد ثم يُحدَّث بعد الضغط عليه)
+  const saveProfileEmail = async (pwOverride?: string) => {
+    const user = auth.currentUser;
+    if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
+    if (!profileNewEmail.trim()) { setToastMessage('أدخل البريد الجديد'); return; }
+    if (!(pwOverride ?? profileEmailPassword).trim()) { setToastMessage('أدخل كلمة المرور الحالية'); return; }
+    setProfileEmailBusy(true);
+    try {
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? profileEmailPassword);
+      await reauthenticateWithCredential(user, credential);
+      await verifyBeforeUpdateEmail(user, profileNewEmail.trim());
+      setToastMessage('أُرسل رابط تأكيد إلى البريد الجديد — افتحه لإتمام التغيير');
+      setProfileNewEmail(''); setProfileEmailPassword('');
+    } catch (e: any) {
+      if (e?.code === 'auth/wrong-password' || e?.code === 'auth/invalid-credential') setToastMessage('كلمة المرور غير صحيحة');
+      else if (e?.code === 'auth/invalid-email') setToastMessage('البريد الجديد غير صحيح');
+      else if (e?.code === 'auth/email-already-in-use') setToastMessage('البريد مستخدم بالفعل');
+      else setToastMessage('تعذّر تغيير البريد');
+      console.error(e);
+    } finally { setProfileEmailBusy(false); }
+  };
+
+  // تغيير كلمة المرور (يُلغي البصمة لأنها تعتمد على كلمة المرور القديمة)
+  const saveProfilePassword = async (pwOverride?: string) => {
+    const user = auth.currentUser;
+    if (!user || !user.email) { setToastMessage('خطأ في المصادقة'); return; }
+    if (!(pwOverride ?? profileCurrentPassword).trim() || !profileNewPassword.trim()) { setToastMessage('أدخل كلمة المرور الحالية والجديدة'); return; }
+    if (profileNewPassword.length < 6) { setToastMessage('كلمة المرور الجديدة قصيرة (٦ أحرف على الأقل)'); return; }
+    if (profileNewPassword !== profileConfirmPassword) { setToastMessage('تأكيد كلمة المرور غير مطابق'); return; }
+    setProfilePasswordBusy(true);
+    try {
+      const credential = EmailAuthProvider.credential(user.email, pwOverride ?? profileCurrentPassword);
+      await reauthenticateWithCredential(user, credential);
+      await updatePassword(user, profileNewPassword);
+      if (getBioStore()) { clearBioStore(); setBioEnabled(false); }
+      setProfileCurrentPassword(''); setProfileNewPassword(''); setProfileConfirmPassword('');
+      setToastMessage('تم تغيير كلمة المرور' + (bioEnabled ? ' — أعد تفعيل البصمة' : ''));
+    } catch (e: any) {
+      if (e?.code === 'auth/wrong-password' || e?.code === 'auth/invalid-credential') setToastMessage('كلمة المرور الحالية غير صحيحة');
+      else if (e?.code === 'auth/weak-password') setToastMessage('كلمة المرور الجديدة ضعيفة');
+      else setToastMessage('تعذّر تغيير كلمة المرور');
+      console.error(e);
+    } finally { setProfilePasswordBusy(false); }
+  };
+
   // Show loading while checking auth state
   if (authLoading) {
     return (
@@ -2517,6 +3097,12 @@ function App() {
               </span>
             </button>
           </form>
+          {bioAvailable && bioEnabled && (
+            <button type="button" className="bio-login-btn" onClick={handleBioLogin} disabled={bioBusy}>
+              <span className="bio-login-icon">👤</span>
+              <span>{bioBusy ? 'جارٍ التحقق...' : 'دخول بالبصمة / Face ID'}</span>
+            </button>
+          )}
         </div>
         {toastMessage && <div className="toast">{toastMessage}</div>}
       </div>
@@ -2542,11 +3128,15 @@ function App() {
             {darkMode ? '🌙' : '☀️'}
           </div>
         </button>
+        <button className="chat-toggle-btn" onClick={() => { setShowChat(true); markChatRead(); }} title="الشات العام بين حسابات الإدارة">
+          💬
+          {chatUnreadCount > 0 && <span className="chat-toggle-count">{chatUnreadCount}</span>}
+        </button>
         <div className="search-box">
           <input 
             type="text"
             placeholder={
-              activeTab === 'expenses' || activeTab === 'microtik' || activeTab === 'cards' || activeTab === 'towers' || activeTab === 'user-ip'
+              activeTab === 'expenses' || activeTab === 'microtik' || activeTab === 'cards' || activeTab === 'towers' || activeTab === 'user-ip' || activeTab === 'whatsapp'
                 ? 'البحث غير متاح في هذا التبويب'
                 : activeTab === 'discounts'
                 ? 'ابحث في العملاء بالخصم...'
@@ -2557,7 +3147,7 @@ function App() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="search-input"
-            disabled={activeTab === 'expenses' || activeTab === 'microtik' || activeTab === 'cards' || activeTab === 'towers' || activeTab === 'user-ip'}
+            disabled={activeTab === 'expenses' || activeTab === 'microtik' || activeTab === 'cards' || activeTab === 'towers' || activeTab === 'user-ip' || activeTab === 'whatsapp'}
           />
           {searchQuery && searchResults.length > 0 && (
             <div className="search-results">
@@ -2584,6 +3174,9 @@ function App() {
             </div>
           )}
         </div>
+        <button className="profile-avatar-btn" onClick={openProfile} title="حسابي — الاسم والبريد وكلمة المرور">
+          {(auth.currentUser?.displayName || auth.currentUser?.email || '؟').trim().charAt(0).toUpperCase()}
+        </button>
         <button onClick={handleLogout} className="btn secondary">تسجيل خروج</button>
       </header>
 
@@ -2597,6 +3190,7 @@ function App() {
         <button className={`tab-btn ${activeTab === 'discounts' ? 'active' : ''}`} onClick={() => setActiveTab('discounts')}>الخصومات</button>
         <button className={`tab-btn ${activeTab === 'suspended' ? 'active' : ''}`} onClick={() => setActiveTab('suspended')}>إيقاف مؤقت</button>
         <button className={`tab-btn ${activeTab === 'cards' ? 'active' : ''}`} onClick={() => setActiveTab('cards')}>البطاقات</button>
+        <button className={`tab-btn ${activeTab === 'whatsapp' ? 'active' : ''}`} onClick={() => setActiveTab('whatsapp')}>واتساب</button>
         <button className={`tab-btn ${activeTab === 'towers' ? 'active' : ''}`} onClick={() => setActiveTab('towers')}>الأبراج</button>
         <button className={`tab-btn ${activeTab === 'user-ip' ? 'active' : ''}`} onClick={() => setActiveTab('user-ip')}>user number &amp; ip number</button>
         <button className={`tab-btn ${activeTab === 'microtik' ? 'active' : ''}`} onClick={() => setActiveTab('microtik')}>ميكروتيك</button>
@@ -3537,7 +4131,7 @@ function App() {
 
       {/* Customer Details Modal */}
       {showCustomerModal && selectedCustomer && (
-        <div className="modal-overlay" onClick={() => setShowCustomerModal(false)}>
+        <div className="modal-overlay modal-overlay-top" onClick={() => setShowCustomerModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>معلومات العميل</h3>
@@ -3657,7 +4251,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setDeleteConfirm(null); setDeletePassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmDelete} className="btn danger" disabled={deleteLoading}>
+              {bioConfirmBtn(confirmDelete)}<button onClick={() => confirmDelete()} className="btn danger" disabled={deleteLoading}>
                 {deleteLoading ? 'جاري التحقق...' : 'تأكيد الحذف'}
               </button>
             </div>
@@ -3693,7 +4287,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setFinanceDeleteConfirm(null); setFinanceDeletePassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmFinanceDelete} className="btn danger" disabled={financeDeleteLoading}>
+              {bioConfirmBtn(confirmFinanceDelete)}<button onClick={() => confirmFinanceDelete()} className="btn danger" disabled={financeDeleteLoading}>
                 {financeDeleteLoading ? 'جاري التحقق...' : 'تأكيد الحذف'}
               </button>
             </div>
@@ -3731,7 +4325,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setDiscountDeleteConfirm(null); setDiscountDeletePassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmDiscountDelete} className="btn danger" disabled={discountDeleteLoading}>
+              {bioConfirmBtn(confirmDiscountDelete)}<button onClick={() => confirmDiscountDelete()} className="btn danger" disabled={discountDeleteLoading}>
                 {discountDeleteLoading ? 'جاري التحقق...' : 'تأكيد إزالة الخصم'}
               </button>
             </div>
@@ -3865,7 +4459,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setPendingEditExpense(null); setPendingEditIncome(null); setEditFinancePassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmEditFinance} className="btn primary" disabled={editFinanceLoading}>
+              {bioConfirmBtn(confirmEditFinance)}<button onClick={() => confirmEditFinance()} className="btn primary" disabled={editFinanceLoading}>
                 {editFinanceLoading ? 'جاري التحقق...' : 'تأكيد'}
               </button>
             </div>
@@ -3899,7 +4493,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setEditPasswordModal(false); setPendingEditCustomer(null); setEditPassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmEditPassword} className="btn primary" disabled={editLoading}>
+              {bioConfirmBtn(confirmEditPassword)}<button onClick={() => confirmEditPassword()} className="btn primary" disabled={editLoading}>
                 {editLoading ? 'جاري التحقق...' : 'متابعة'}
               </button>
             </div>
@@ -5211,7 +5805,13 @@ function App() {
             list = list.filter(t =>
               t.deviceName.toLowerCase().includes(q) ||
               (t.ipNumber && t.ipNumber.toLowerCase().includes(q)) ||
-              (t.towerNumber && t.towerNumber.toLowerCase().includes(q))
+              (t.towerNumber && t.towerNumber.toLowerCase().includes(q)) ||
+              // البحث بأسماء العملاء المرتبطين بالبرج أو الـ IP أو اسم المستخدم
+              customers.some(c => c.towerId === t.id && (
+                c.name.toLowerCase().includes(q) ||
+                (c.ipNumber && c.ipNumber.toLowerCase().includes(q)) ||
+                (c.userName && c.userName.toLowerCase().includes(q))
+              ))
             );
           }
           const sorted = [...list].sort((a, b) => a.deviceName.localeCompare(b.deviceName, 'ar'));
@@ -5335,7 +5935,7 @@ function App() {
                 <input
                   type="text"
                   className="cards-search-input"
-                  placeholder="ابحث باسم الجهاز أو IP أو رقم البرج..."
+                  placeholder="ابحث بالبرج أو باسم العميل أو IP العميل..."
                   value={towerSearch}
                   onChange={(e) => setTowerSearch(e.target.value)}
                 />
@@ -5423,8 +6023,8 @@ function App() {
                           .sort((a, b) => a.deviceName.localeCompare(b.deviceName, 'ar'));
                         return (
                           <div key={c.id} className="tower-queue-row">
-                            <div className="tower-queue-info">
-                              <strong>{c.name}</strong>
+                            <div className="tower-queue-info tower-user-info-clickable" onClick={() => openCustomerDetails(c)} title="عرض معلومات العميل الكاملة">
+                              <strong>{c.name} <span className="tower-user-info-hint">ℹ️</span></strong>
                               <span className="small">{c.userName || '-'} • {c.ipNumber || '-'}{cityName ? ` • ${cityName}` : ''}</span>
                             </div>
                             {cityTowers.length === 0 ? (
@@ -5551,6 +6151,186 @@ function App() {
           );
         })()}
 
+        {activeTab === 'whatsapp' && (() => {
+          // حالة السداد: للشهر المختار إن حُدّد شهر، وإلا الحالة العامة للعميل
+          const statusOf = (c: Customer): 'paid' | 'partial' | 'discounted' | 'unpaid' => {
+            if (waMonth > 0) {
+              const key = `${waYear}-${String(waMonth).padStart(2, '0')}`;
+              const m = c.monthlyPayments?.[key];
+              return m === 'paid' ? 'paid' : m === 'partial' ? 'partial' : m === 'discount' ? 'discounted' : 'unpaid';
+            }
+            return c.paymentStatus === 'paid' ? 'paid' : c.paymentStatus === 'partial' ? 'partial' : c.paymentStatus === 'discount' ? 'discounted' : 'unpaid';
+          };
+          const statusMatch = (c: Customer) => waStatusFilter === 'all' || statusOf(c) === waStatusFilter;
+          // بحث بالاسم أو رقم الجوال أو IP Number أو اسم المستخدم
+          const q = waSearch.trim().toLowerCase();
+          const qDigits = q.replace(/\D/g, '');
+          const searchMatch = (c: Customer) => {
+            if (!q) return true;
+            return c.name.toLowerCase().includes(q)
+              || (!!qDigits && !!c.phone && c.phone.replace(/\D/g, '').includes(qDigits))
+              || (!!c.ipNumber && c.ipNumber.toLowerCase().includes(q))
+              || (!!c.userName && c.userName.toLowerCase().includes(q));
+          };
+          const waCustomers = customers
+            .filter(c => (!waCityId || c.cityId === waCityId) && statusMatch(c) && searchMatch(c))
+            .sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+          const selectedSet = new Set(waSelected);
+          const templateBody = waTemplateId === 'custom' ? waCustomTemplate : (WA_TEMPLATES.find(t => t.id === waTemplateId)?.body || '');
+          const buildMsg = (c: Customer) => {
+            const cityName = cities.find(ct => ct.id === c.cityId)?.name || '';
+            const amount = waAmount.trim() || (c.subscriptionValue != null ? String(c.subscriptionValue) : '');
+            return fillTemplate(templateBody, { name: c.name, city: cityName, phone: c.phone || '', amount });
+          };
+          const waLink = (c: Customer) => `https://wa.me/${normalizePhone(c.phone)}?text=${encodeURIComponent(buildMsg(c))}`;
+          const toggleOne = (id: string) => setWaSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+          // العملاء الموقوفون مؤقتاً لا يُرسَل لهم حتى يُرفع الإيقاف
+          const sendableIds = waCustomers.filter(c => !c.isSuspended).map(c => c.id);
+          const allSelected = sendableIds.length > 0 && sendableIds.every(id => selectedSet.has(id));
+          const toggleAll = () => setWaSelected(allSelected ? [] : sendableIds);
+          const selectedCustomers = waCustomers.filter(c => selectedSet.has(c.id) && !c.isSuspended);
+          const suspendedCount = waCustomers.filter(c => c.isSuspended).length;
+          const queueActive = waQueue.length > 0 && waQueuePos < waQueue.length;
+          const startQueue = () => {
+            const ids = selectedCustomers.map(c => c.id);
+            if (ids.length === 0) return;
+            setWaQueue(ids); setWaQueuePos(1);
+            window.open(waLink(selectedCustomers[0]), '_blank');
+          };
+          const sendNext = () => {
+            const c = customers.find(x => x.id === waQueue[waQueuePos]);
+            if (c) window.open(waLink(c), '_blank');
+            setWaQueuePos(p => p + 1);
+          };
+
+          return (
+          <div className="section wa-section">
+            <div className="wa-hero">
+              <div className="wa-hero-icon">💬</div>
+              <div>
+                <h2 className="wa-hero-title">رسائل واتساب للعملاء</h2>
+                <p className="wa-hero-subtitle">ذكّر عملاءك بالسداد برسالة جاهزة تُعبّأ تلقائياً باسم العميل ومدينته وجواله والمبلغ</p>
+              </div>
+            </div>
+
+            {/* القالب */}
+            <div className="wa-panel">
+              <div className="wa-panel-title">📝 القالب</div>
+              <div className="wa-templates">
+                {WA_TEMPLATES.map(t => (
+                  <button key={t.id} className={`wa-template-chip ${waTemplateId === t.id ? 'active' : ''}`} onClick={() => setWaTemplateId(t.id)}>{t.title}</button>
+                ))}
+                <button className={`wa-template-chip ${waTemplateId === 'custom' ? 'active' : ''}`} onClick={() => setWaTemplateId('custom')}>✏️ قالب مخصص</button>
+              </div>
+              {waTemplateId === 'custom' ? (
+                <div className="wa-custom-wrap">
+                  <textarea className="wa-custom-area" value={waCustomTemplate} onChange={(e) => setWaCustomTemplate(e.target.value)} rows={4} placeholder="اكتب قالبك مستخدماً المتغيّرات..." />
+                  <button className="btn secondary btn-sm" onClick={() => { localStorage.setItem(WA_CUSTOM_KEY, waCustomTemplate); setToastMessage('تم حفظ القالب المخصص'); }}>💾 حفظ القالب</button>
+                </div>
+              ) : (
+                <div className="wa-template-preview">{templateBody}</div>
+              )}
+              <div className="wa-vars-hint">المتغيّرات التلقائية: <code>{'{الاسم}'}</code> <code>{'{المدينة}'}</code> <code>{'{الجوال}'}</code> <code>{'{المبلغ}'}</code></div>
+              <div className="wa-amount-row">
+                <label>المبلغ:</label>
+                <input type="number" value={waAmount} onChange={(e) => setWaAmount(e.target.value)} placeholder="اتركه فارغاً لاستخدام قيمة اشتراك كل عميل" />
+              </div>
+            </div>
+
+            {/* الفلاتر */}
+            <div className="wa-toolbar">
+              <div className="cards-search-wrapper wa-search">
+                <span className="cards-search-icon">🔍</span>
+                <input type="text" className="cards-search-input" placeholder="ابحث بالاسم أو رقم الجوال أو IP Number..."
+                  value={waSearch} onChange={(e) => setWaSearch(e.target.value)} />
+                {waSearch && <button className="cards-search-clear" onClick={() => setWaSearch('')}>✕</button>}
+              </div>
+              <select className="cards-select" value={waCityId ?? ''} onChange={(e) => { setWaCityId(e.target.value || null); setWaSelected([]); }}>
+                <option value="">كل المدن</option>
+                {cities.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <div className="wa-status-filters">
+                {([['all', 'الكل'], ['unpaid', 'ما سدد'], ['paid', 'سدد'], ['partial', 'جزئي']] as const).map(([k, label]) => (
+                  <button key={k} className={`wa-status-btn ${waStatusFilter === k ? 'active' : ''}`} onClick={() => { setWaStatusFilter(k); setWaSelected([]); }}>{label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* فلتر الشهر */}
+            <div className="wa-toolbar wa-month-toolbar">
+              <label className="wa-month-label">الشهر:</label>
+              <select className="cards-select" value={waMonth} onChange={(e) => { setWaMonth(Number(e.target.value)); setWaSelected([]); }}>
+                <option value={0}>الحالة العامة (بدون شهر)</option>
+                {MONTHS_AR.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              </select>
+              <select className="cards-select" value={waYear} onChange={(e) => { setWaYear(Number(e.target.value)); setWaSelected([]); }} disabled={waMonth === 0}>
+                {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              {waMonth > 0 && <span className="wa-month-hint">الفلترة حسب سداد {MONTHS_AR[waMonth - 1]} {waYear}</span>}
+            </div>
+
+            {/* شريط الإرسال للمحددين */}
+            {selectedCustomers.length > 0 && (
+              <div className="wa-send-bar">
+                {!queueActive ? (
+                  <button className="wa-bulk-btn" onClick={startQueue}>📤 إرسال للمحددين ({selectedCustomers.length}) تِباعاً</button>
+                ) : (
+                  <>
+                    <span className="wa-queue-progress">إرسال {waQueuePos} من {waQueue.length}</span>
+                    <button className="wa-bulk-btn" onClick={sendNext}>▶ التالي</button>
+                    <button className="btn secondary btn-sm" onClick={() => { setWaQueue([]); setWaQueuePos(0); }}>إيقاف</button>
+                  </>
+                )}
+                <span className="wa-send-hint">يفتح محادثة كل عميل برسالته جاهزة — اضغط إرسال داخل واتساب ثم «التالي».</span>
+              </div>
+            )}
+
+            {/* قائمة العملاء */}
+            {waCustomers.length === 0 ? (
+              <div className="cards-empty"><div className="cards-empty-icon">💬</div><p>لا يوجد عملاء مطابقون للفلتر</p></div>
+            ) : (
+              <>
+                <div className="wa-list-head">
+                  <label className="wa-checkbox-label">
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+                    تحديد الكل ({sendableIds.length})
+                  </label>
+                  <span className="wa-selected-count">
+                    المحدد: {selectedCustomers.length}
+                    {suspendedCount > 0 && <span className="wa-suspended-note"> • {suspendedCount} موقوف مؤقتاً (لا يُرسل لهم)</span>}
+                  </span>
+                </div>
+                <div className="wa-list">
+                  {waCustomers.map(c => {
+                    const cityName = cities.find(ct => ct.id === c.cityId)?.name || '—';
+                    const hasPhone = !!normalizePhone(c.phone);
+                    const suspended = !!c.isSuspended;
+                    return (
+                      <div key={c.id} className={`wa-row ${selectedSet.has(c.id) && !suspended ? 'selected' : ''} ${suspended ? 'suspended' : ''}`}>
+                        <label className="wa-checkbox-label">
+                          <input type="checkbox" checked={selectedSet.has(c.id) && !suspended} onChange={() => toggleOne(c.id)} disabled={suspended} />
+                        </label>
+                        <div className="wa-row-info">
+                          <strong>{suspended && '⛔ '}{c.name}</strong>
+                          <span className="small">{cityName} • {c.phone || 'بدون جوال'}</span>
+                        </div>
+                        {suspended ? (
+                          <span className="wa-suspended-badge" title="لا يمكن الإرسال حتى يُرفع الإيقاف المؤقت">موقوف مؤقتاً</span>
+                        ) : hasPhone ? (
+                          <a className="wa-send-btn" href={waLink(c)} target="_blank" rel="noopener noreferrer">📱 إرسال</a>
+                        ) : (
+                          <span className="wa-nophone">لا يوجد جوال</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+          );
+        })()}
+
       {/* Tower Customers Modal — مستخدمو البرج (عرض/إزالة فقط) */}
       {towerCustomersModal && (() => {
         const tower = towers.find(t => t.id === towerCustomersModal.id) || towerCustomersModal;
@@ -5575,8 +6355,8 @@ function App() {
                       const cityName = cities.find(ct => ct.id === c.cityId)?.name;
                       return (
                         <div key={c.id} className="tower-user-row">
-                          <div className="tower-user-info">
-                            <strong>{c.name}</strong>
+                          <div className="tower-user-info tower-user-info-clickable" onClick={() => openCustomerDetails(c)} title="عرض معلومات العميل الكاملة">
+                            <strong>{c.name} <span className="tower-user-info-hint">ℹ️</span></strong>
                             <span className="small">{c.userName || '-'} • {c.ipNumber || '-'}{cityName ? ` • ${cityName}` : ''}</span>
                           </div>
                           <button className="btn danger btn-sm" onClick={() => { setPendingUnlinkCustomer(c); setUnlinkPassword(''); }}>إزالة</button>
@@ -5613,7 +6393,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setPendingUnlinkCustomer(null); setUnlinkPassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmUnlinkCustomer} className="btn danger" disabled={unlinkLoading}>{unlinkLoading ? 'جاري التحقق...' : 'إزالة'}</button>
+              {bioConfirmBtn(confirmUnlinkCustomer)}<button onClick={() => confirmUnlinkCustomer()} className="btn danger" disabled={unlinkLoading}>{unlinkLoading ? 'جاري التحقق...' : 'إزالة'}</button>
             </div>
           </div>
         </div>
@@ -5638,7 +6418,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => { setTowerEditPasswordModal(false); setPendingEditTower(null); setTowerEditPassword(''); }} className="btn secondary">إلغاء</button>
-              <button onClick={confirmTowerEditPassword} className="btn primary" disabled={towerEditLoading}>{towerEditLoading ? 'جاري التحقق...' : 'متابعة'}</button>
+              {bioConfirmBtn(confirmTowerEditPassword)}<button onClick={() => confirmTowerEditPassword()} className="btn primary" disabled={towerEditLoading}>{towerEditLoading ? 'جاري التحقق...' : 'متابعة'}</button>
             </div>
           </div>
         </div>
@@ -5686,7 +6466,7 @@ function App() {
               <button onClick={() => setTransferModal(false)} className="btn secondary" disabled={transferLoading}>
                 إلغاء
               </button>
-              <button onClick={confirmTransferCustomer} className="btn primary" disabled={transferLoading}>
+              {bioConfirmBtn(confirmTransferCustomer)}<button onClick={() => confirmTransferCustomer()} className="btn primary" disabled={transferLoading}>
                 {transferLoading ? 'جاري النقل...' : 'تأكيد النقل'}
               </button>
             </div>
@@ -5719,7 +6499,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => setCardDeleteConfirm(null)} className="btn secondary">إلغاء</button>
-              <button onClick={confirmDeleteCard} className="btn danger" disabled={cardDeleteLoading}>
+              {bioConfirmBtn(confirmDeleteCard)}<button onClick={() => confirmDeleteCard()} className="btn danger" disabled={cardDeleteLoading}>
                 {cardDeleteLoading ? 'جاري الحذف...' : 'حذف'}
               </button>
             </div>
@@ -5815,7 +6595,7 @@ function App() {
             </div>
             <div className="modal-footer">
               <button onClick={() => setTowerDeleteConfirm(null)} className="btn secondary">إلغاء</button>
-              <button onClick={confirmDeleteTower} className="btn danger" disabled={towerDeleteLoading}>
+              {bioConfirmBtn(confirmDeleteTower)}<button onClick={() => confirmDeleteTower()} className="btn danger" disabled={towerDeleteLoading}>
                 {towerDeleteLoading ? 'جاري الحذف...' : 'حذف'}
               </button>
             </div>
@@ -5866,6 +6646,264 @@ function App() {
         <div className="tower-lightbox" onClick={() => setTowerImagePreview(null)}>
           <button className="tower-lightbox-close" onClick={() => setTowerImagePreview(null)}>×</button>
           <img src={towerImagePreview} alt="صورة البرج" className="tower-lightbox-img" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
+
+      {/* Chat Modal — الشات العام بين حسابات الإدارة */}
+      {showChat && (
+        <div className="modal-overlay chat-overlay" onClick={() => setShowChat(false)}>
+          <div className="chat-window" onClick={(e) => e.stopPropagation()}>
+            <div className="chat-header">
+              <div className="chat-header-title">
+                💬 الشات العام
+                <span className="chat-retention-hint">الرسائل تُحذف تلقائياً بعد ٣ أشهر — ثبّت المهم 📌</span>
+              </div>
+              <button onClick={() => setShowChat(false)} className="modal-close">×</button>
+            </div>
+            <div className="chat-messages">
+              {chatMessages.length === 0 ? (
+                <div className="chat-empty">لا توجد رسائل بعد — ابدأ المحادثة 👋</div>
+              ) : (
+                chatMessages.map(m => {
+                  const mine = m.senderEmail === auth.currentUser?.email;
+                  return (
+                    <div key={m.id} className={`chat-msg ${mine ? 'mine' : 'other'} ${m.pinned ? 'pinned' : ''}`}>
+                      {!mine && <div className="chat-msg-sender">{m.senderName || m.senderEmail}</div>}
+                      {m.pinned && <div className="chat-pinned-badge">📌 مثبّتة — لا تُحذف تلقائياً</div>}
+                      {m.text && <div className="chat-msg-text">{m.text}</div>}
+                      {m.mediaUrl && m.mediaType === 'image' && (
+                        <div className="chat-media-wrap">
+                          <img className="chat-msg-media" src={m.mediaUrl} alt="صورة" onClick={() => window.open(m.mediaUrl, '_blank')} />
+                          <button className="chat-download-btn" disabled={chatDownloadingId === m.id} onClick={() => handleDownload(m, 'image.jpg')}>
+                            {chatDownloadingId === m.id ? '... جارٍ' : '⬇️ تحميل'}
+                          </button>
+                        </div>
+                      )}
+                      {m.mediaUrl && m.mediaType === 'video' && (
+                        <div className="chat-media-wrap">
+                          <video className="chat-msg-media" src={m.mediaUrl} controls />
+                          <button className="chat-download-btn" disabled={chatDownloadingId === m.id} onClick={() => handleDownload(m, 'video.mp4')}>
+                            {chatDownloadingId === m.id ? '... جارٍ' : '⬇️ تحميل'}
+                          </button>
+                        </div>
+                      )}
+                      {m.mediaUrl && m.mediaType === 'file' && (
+                        <button className="chat-file-card" disabled={chatDownloadingId === m.id} onClick={() => handleDownload(m, 'file')}>
+                          <span className="chat-file-icon">{fileIcon(m.fileName)}</span>
+                          <span className="chat-file-info">
+                            <span className="chat-file-name">{m.fileName || 'ملف'}</span>
+                            <span className="chat-file-size">
+                              {formatFileSize(m.fileSize)} • {chatDownloadingId === m.id ? 'جارٍ التحميل...' : 'اضغط للتحميل'}
+                            </span>
+                          </span>
+                          <span className="chat-file-dl">{chatDownloadingId === m.id ? '⏳' : '⬇️'}</span>
+                        </button>
+                      )}
+                      <div className="chat-msg-footer">
+                        <span className="chat-msg-time">{new Date(m.createdAt).toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })}</span>
+                        <span className="chat-msg-actions">
+                          <button className={`chat-pin-btn ${m.pinned ? 'active' : ''}`} onClick={() => toggleChatPin(m)}
+                            title={m.pinned ? 'إلغاء التثبيت' : 'تثبيت الرسالة (تمنع حذفها التلقائي)'}>📌</button>
+                          {mine && <button className="chat-del-btn" onClick={() => setChatDeleteConfirm(m)} title="حذف رسالتي">🗑️</button>}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            {pendingSave && (
+              <div className="chat-save-bar">
+                <span className="chat-save-text">الملف جاهز — اضغط للحفظ في جهازك</span>
+                <button className="chat-save-btn" onClick={savePendingFile}>💾 حفظ في الجهاز</button>
+                <button className="chat-save-close" onClick={() => setPendingSave(null)}>✕</button>
+              </div>
+            )}
+            {chatUploading && (
+              <div className="chat-upload-progress">
+                <div className="chat-upload-head">
+                  <span className="chat-upload-name">📤 {chatUploadName}</span>
+                  <span className="chat-upload-pct">{chatUploadProgress}%</span>
+                </div>
+                <div className="chat-upload-track">
+                  <div className="chat-upload-fill" style={{ width: `${chatUploadProgress}%` }} />
+                </div>
+              </div>
+            )}
+            <div className="chat-input-bar">
+              <label className="chat-attach" title="إرسال صورة أو فيديو أو ملف">
+                📎
+                <input type="file" hidden disabled={chatUploading} onChange={(e) => { sendChatMedia(e.target.files?.[0]); e.target.value = ''; }} />
+              </label>
+              <input type="text" className="chat-text-input"
+                placeholder={chatUploading ? 'جارٍ رفع الملف...' : 'اكتب رسالة...'}
+                value={chatInput} onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') sendChatMessage(); }} disabled={chatUploading} />
+              <button className="chat-send" onClick={sendChatMessage} disabled={!chatInput.trim() || chatUploading}>إرسال</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Chat Delete Confirm — تأكيد حذف رسالة */}
+      {chatDeleteConfirm && (
+        <div className="modal-overlay modal-overlay-top" onClick={() => setChatDeleteConfirm(null)}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>حذف الرسالة</h3>
+              <button onClick={() => setChatDeleteConfirm(null)} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text">
+                هل تريد حذف هذه الرسالة نهائياً؟
+                {chatDeleteConfirm.text && <><br /><strong className="chat-del-preview">«{chatDeleteConfirm.text.slice(0, 80)}{chatDeleteConfirm.text.length > 80 ? '…' : ''}»</strong></>}
+                {chatDeleteConfirm.mediaUrl && <><br /><small style={{ opacity: 0.7 }}>سيُحذف الملف المرفق أيضاً.</small></>}
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => setChatDeleteConfirm(null)} className="btn secondary">إلغاء</button>
+              <button onClick={() => deleteChatMessage(chatDeleteConfirm)} className="btn danger">حذف</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Modal — صفحة حساب المستخدم */}
+      {showProfileModal && (
+        <div className="modal-overlay" onClick={closeProfile}>
+          <div className="modal profile-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>👤 حساب المستخدم</h3>
+              <button onClick={closeProfile} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <div className="profile-hero">
+                <div className="profile-hero-avatar">
+                  {(auth.currentUser?.displayName || auth.currentUser?.email || '؟').trim().charAt(0).toUpperCase()}
+                </div>
+                <div className="profile-hero-info">
+                  <strong>{auth.currentUser?.displayName || 'بدون اسم'}</strong>
+                  <span className="small" dir="ltr">{auth.currentUser?.email}</span>
+                </div>
+              </div>
+
+              {/* الاسم */}
+              <div className="profile-section">
+                <div className="section-title-small">الاسم</div>
+                <div className="profile-row">
+                  <input type="text" value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="اسم الحساب" />
+                  <button className="btn primary" onClick={saveProfileName} disabled={profileNameBusy}>
+                    {profileNameBusy ? '...' : 'حفظ'}
+                  </button>
+                </div>
+              </div>
+
+              {/* البريد الإلكتروني */}
+              <div className="profile-section">
+                <div className="section-title-small">البريد الإلكتروني</div>
+                <p className="small" style={{ opacity: 0.7, margin: '0 0 8px' }}>الحالي: <span dir="ltr">{auth.currentUser?.email}</span></p>
+                <input type="email" dir="ltr" value={profileNewEmail} onChange={(e) => setProfileNewEmail(e.target.value)} placeholder="البريد الجديد" />
+                <div className="password-input-wrap">
+                  <input type={showProfileEmailPw ? 'text' : 'password'} value={profileEmailPassword} onChange={(e) => setProfileEmailPassword(e.target.value)} placeholder="كلمة المرور الحالية للتأكيد" />
+                  <button type="button" className="password-eye" onClick={() => setShowProfileEmailPw(v => !v)} tabIndex={-1}>{showProfileEmailPw ? '🙈' : '👁️'}</button>
+                </div>
+                {bioConfirmBtn(saveProfileEmail)}
+                <button className="btn primary profile-full-btn" onClick={() => saveProfileEmail()} disabled={profileEmailBusy}>
+                  {profileEmailBusy ? 'جارٍ الإرسال...' : 'تغيير البريد'}
+                </button>
+                <p className="small" style={{ opacity: 0.6, margin: '8px 0 0' }}>سيُرسل رابط تأكيد إلى البريد الجديد، ويُحدَّث بعد فتحه.</p>
+              </div>
+
+              {/* كلمة المرور */}
+              <div className="profile-section">
+                <div className="section-title-small">كلمة المرور</div>
+                {/* كلمة المرور الحالية — تُعرض بالبصمة فقط (Firebase لا يخزّنها) */}
+                {bioEnabled ? (
+                  <div className="profile-reveal-row">
+                    <div className="profile-reveal-field">
+                      <span className="small" style={{ opacity: 0.7 }}>كلمة المرور الحالية</span>
+                      <span className="profile-reveal-value" dir="ltr">{revealedCurrentPassword ?? '••••••••'}</span>
+                    </div>
+                    {revealedCurrentPassword ? (
+                      <button className="btn secondary btn-sm" onClick={() => setRevealedCurrentPassword(null)}>🙈 إخفاء</button>
+                    ) : (
+                      <button className="btn secondary btn-sm" onClick={revealCurrentPassword} disabled={revealBusy}>{revealBusy ? '...' : '👆 إظهار بالبصمة'}</button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="small" style={{ opacity: 0.6, margin: '0 0 10px' }}>🔒 لعرض كلمة المرور الحالية، فعّل الدخول بالبصمة (لأسباب أمنية لا يخزّن Firebase كلمة المرور، فلا يمكن استرجاعها بدونها).</p>
+                )}
+                <div className="password-input-wrap">
+                  <input type={showProfileCurPw ? 'text' : 'password'} value={profileCurrentPassword} onChange={(e) => setProfileCurrentPassword(e.target.value)} placeholder="كلمة المرور الحالية" />
+                  <button type="button" className="password-eye" onClick={() => setShowProfileCurPw(v => !v)} tabIndex={-1}>{showProfileCurPw ? '🙈' : '👁️'}</button>
+                </div>
+                <div className="password-input-wrap">
+                  <input type={showProfileNewPw ? 'text' : 'password'} value={profileNewPassword} onChange={(e) => setProfileNewPassword(e.target.value)} placeholder="كلمة المرور الجديدة" />
+                  <button type="button" className="password-eye" onClick={() => setShowProfileNewPw(v => !v)} tabIndex={-1}>{showProfileNewPw ? '🙈' : '👁️'}</button>
+                </div>
+                <div className="password-input-wrap">
+                  <input type={showProfileConfPw ? 'text' : 'password'} value={profileConfirmPassword} onChange={(e) => setProfileConfirmPassword(e.target.value)} placeholder="تأكيد كلمة المرور الجديدة" />
+                  <button type="button" className="password-eye" onClick={() => setShowProfileConfPw(v => !v)} tabIndex={-1}>{showProfileConfPw ? '🙈' : '👁️'}</button>
+                </div>
+                {bioConfirmBtn(saveProfilePassword)}
+                <button className="btn primary profile-full-btn" onClick={() => saveProfilePassword()} disabled={profilePasswordBusy}>
+                  {profilePasswordBusy ? 'جارٍ التغيير...' : 'تغيير كلمة المرور'}
+                </button>
+                {bioEnabled && <p className="small" style={{ opacity: 0.6, margin: '8px 0 0' }}>ملاحظة: تغيير كلمة المرور سيُلغي الدخول بالبصمة على هذا الجهاز، فأعد تفعيله بعدها.</p>}
+              </div>
+
+              {/* الدخول بالبصمة */}
+              {bioAvailable && (
+                <div className="profile-section">
+                  <div className="section-title-small">الدخول بالبصمة / Face ID</div>
+                  {bioEnabled ? (
+                    <>
+                      <p className="small" style={{ opacity: 0.7, margin: '0 0 10px' }}>✅ البصمة مفعّلة على هذا الجهاز — يمكنك الدخول بها وعرض كلمة المرور.</p>
+                      <button className="btn secondary profile-full-btn" onClick={disableBiometric}>🔒 إلغاء البصمة من هذا الجهاز</button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="small" style={{ opacity: 0.7, margin: '0 0 10px' }}>فعّل الدخول بالبصمة على هذا الجهاز كبديل لكلمة المرور.</p>
+                      <button className="btn primary profile-full-btn" onClick={() => { setBioSetupPassword(''); setBioSetupModal(true); }}>👤 تفعيل البصمة</button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button onClick={closeProfile} className="btn secondary">إغلاق</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enable Biometric Modal — تفعيل الدخول بالبصمة */}
+      {bioSetupModal && (
+        <div className="modal-overlay" onClick={() => { setBioSetupModal(false); setBioSetupPassword(''); }}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>👤 تفعيل الدخول بالبصمة</h3>
+              <button onClick={() => { setBioSetupModal(false); setBioSetupPassword(''); }} className="modal-close">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text" style={{ marginBottom: '16px' }}>
+                لتفعيل الدخول بالبصمة على هذا الجهاز، أدخل كلمة المرور للتأكيد. ستُشفَّر وتُحفظ محلياً على هذا الجهاز فقط، ولا تُفكّ إلا ببصمتك.
+              </p>
+              <div className="edit-field">
+                <label>كلمة المرور</label>
+                <input type="password" placeholder="كلمة المرور" value={bioSetupPassword}
+                  onChange={(e) => setBioSetupPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmEnableBiometric()} autoFocus />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => { setBioSetupModal(false); setBioSetupPassword(''); }} className="btn secondary">إلغاء</button>
+              <button onClick={confirmEnableBiometric} className="btn primary" disabled={bioBusy}>
+                {bioBusy ? 'جارٍ التفعيل...' : 'تفعيل'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
